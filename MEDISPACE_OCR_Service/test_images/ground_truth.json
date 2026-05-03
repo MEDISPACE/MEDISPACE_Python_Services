@@ -1,0 +1,50 @@
+{
+  "description": "Ground truth cho benchmark OCR pipeline. Mỗi entry gồm filename ảnh và kết quả chuẩn.",
+  "images": [
+    {
+      "filename": "Donthuoc.jpg",
+      "ground_truth": {
+        "patientName": "Trần Trung",
+        "patientAge": "49",
+        "patientGender": "male",
+        "doctorName": "Nguyễn Văn Hùng",
+        "hospitalName": "Bệnh Viện Bình Dân",
+        "prescriptionDate": "2014-09-25",
+        "diagnosis": "Viêm dạ dày cấp khác",
+        "medications_count": 6,
+        "medications": [
+          {
+            "productName": "YESOM 40",
+            "quantity": 63,
+            "unit": "Viên"
+          },
+          {
+            "productName": "SUCRATE GEL",
+            "quantity": 63,
+            "unit": "Gói"
+          },
+          {
+            "productName": "ARTHUR",
+            "quantity": 63,
+            "unit": "Viên"
+          },
+          {
+            "productName": "PAPAZE",
+            "quantity": 63,
+            "unit": "Viên"
+          },
+          {
+            "productName": "BIOCID MH 3.5",
+            "quantity": 21,
+            "unit": "Chai"
+          },
+          {
+            "productName": "DIGLUMISAN",
+            "quantity": 63,
+            "unit": "Ống"
+          }
+        ]
+      }
+    }
+  ]
+}

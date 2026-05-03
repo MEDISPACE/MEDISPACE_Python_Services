@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+env/
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Model weights (rất nặng, không commit)
+*.pt
+*.pth
+*.onnx
+*.pkl
+
+# Testing / Logs
+*.log
+logs/
+# Personal notes
+note.txt
+
+# IDE
+.vscode/
+.idea/

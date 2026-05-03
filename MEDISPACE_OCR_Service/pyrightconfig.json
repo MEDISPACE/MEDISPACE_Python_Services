@@ -1,0 +1,8 @@
+{
+  "venvPath": "d:/HCMUTE/MAJOR/1TLCN/MEDISPACE_Project/MEDISPACE_OCR_Service",
+  "venv": "venv",
+  "pythonVersion": "3.11",
+  "extraPaths": [".", "src"],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}

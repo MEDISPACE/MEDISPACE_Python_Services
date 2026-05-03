@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment files
+.env
+!.env.example
+
+# Model files (large binaries)
+MEDISPACE_ML_Service/saved_models/
+*.pkl
+*.npy
+*.pt
+*.pth
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OCR debug outputs
+MEDISPACE_OCR_Service/logs/
+
+# Test images (optional - comment out if want to track)
+# MEDISPACE_OCR_Service/test_images/
