@@ -1,5 +1,40 @@
 # MEDISPACE Python Services
 
+> Monorepo chứa các Python microservices cho dự án MediSpace E-Commerce.
+
+## Cấu Trúc
+
+```
+MEDISPACE_Python_Services/
+├── MEDISPACE_OCR_Service/    # OCR Service (port 8001)
+├── MEDISPACE_ML_Service/     # ML Recommendation Service (port 8002)
+├── venv/                     # Shared venv cho ML Service
+├── start_ocr.ps1             # Script khởi động OCR
+├── start_ml.ps1              # Script khởi động ML
+└── README.md
+```
+
+## Khởi Động Nhanh
+
+### OCR Service (port 8001)
+```powershell
+# Chạy từ thư mục MEDISPACE_Python_Services/
+.\start_ocr.ps1
+```
+
+### ML Recommendation Service (port 8002)
+```powershell
+# Chạy từ thư mục MEDISPACE_Python_Services/
+.\start_ml.ps1
+```
+
+## Lưu Ý Venv
+
+| Service | Venv Location |
+|---|---|
+| OCR Service | `../MEDISPACE_OCR_Service/venv/` (path cũ, có PaddleOCR/VietOCR/Torch) |
+| ML Service | `./venv/` (shared venv, có scikit-learn/mlxtend/apscheduler) |
+
 Monorepo chứa các Python microservices cho dự án MediSpace E-Commerce.
 
 ## Services

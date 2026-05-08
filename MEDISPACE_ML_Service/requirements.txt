@@ -1,0 +1,12 @@
+fastapi==0.110.0
+uvicorn==0.29.0
+pymongo==4.10.0
+scikit-learn==1.8.0
+scipy==1.17.1
+pandas==3.0.1
+numpy==1.26.4
+joblib==1.5.3
+python-dotenv==1.0.1
+mlxtend==0.23.0
+apscheduler==3.10.4
+requests==2.32.5
