@@ -1,0 +1,49 @@
+# =====================================================
+# requirements.docker.txt - OCR Service (Docker only)
+# paddleocr + vietocr được cài --no-deps trong Dockerfile
+# để tránh conflict opencv version
+# =====================================================
+
+# --- Web Framework ---
+fastapi==0.110.0
+uvicorn==0.29.0
+python-multipart==0.0.9
+python-dotenv==1.0.1
+
+# --- PaddlePaddle (engine cho PaddleOCR) ---
+paddlepaddle==2.6.2
+
+# --- Dependencies của paddleocr (cài thủ công vì --no-deps) ---
+shapely
+pyclipper
+lmdb
+rapidfuzz
+premailer
+lxml
+attrdict
+openpyxl
+PyYAML
+python-docx
+beautifulsoup4
+fonttools
+fire
+
+# --- Dependencies của vietocr (cài thủ công vì --no-deps) ---
+# albumentations cũng cài --no-deps để tránh nó check opencv
+einops==0.2.0
+gdown==4.4.0
+prefetch-generator==1.0.1
+scikit-learn
+
+# --- Shared dependencies ---
+pillow==10.2.0
+numpy==1.26.4
+scipy
+scikit-image
+tqdm
+requests==2.32.5
+python-dateutil==2.9.0.post0
+pydantic==2.12.5
+
+# --- AI Extractors ---
+google-genai

@@ -56,23 +56,33 @@ def preprocess_crop(crop_bgr: np.ndarray) -> np.ndarray:
 _vietocr_detector = None
 
 
+def _get_device() -> str:
+    """Tự động chọn device phù hợp: CUDA → MPS → CPU."""
+    if torch.cuda.is_available():
+        return 'cuda:0'
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return 'mps'
+    return 'cpu'
+
+
 def get_vietocr():
     """Lazy initialization - chỉ khởi tạo lần đầu tiên được gọi."""
     global _vietocr_detector
     if _vietocr_detector is None:
-        print("[Recognizer] Dang khoi tao VietOCR model tren GPU...")
+        device = _get_device()
+        print(f"[Recognizer] Dang khoi tao VietOCR model tren {device.upper()}...")
         config = Cfg.load_config_from_name('vgg_transformer')
-        config['device'] = 'cuda:0'    # ✅ Dùng RTX 3050 GPU (chia sẻ VRAM với LLM tuần tự)
+        config['device'] = device
         config['predictor']['beamsearch'] = False  # Tắt để chạy nhanh hơn
         _vietocr_detector = Predictor(config)
-        print("[Recognizer] VietOCR đã sẵn sàng!")
+        print(f"[Recognizer] VietOCR đã sẵn sàng! (device={device})")
     return _vietocr_detector
 
 
 def move_vietocr_to_cpu():
     """Đẩy VietOCR model xuống CPU để giải phóng VRAM cho Ollama."""
     global _vietocr_detector
-    if _vietocr_detector is not None:
+    if _vietocr_detector is not None and torch.cuda.is_available():
         _vietocr_detector.model.to('cpu')
         _vietocr_detector.config['device'] = 'cpu'
         torch.cuda.empty_cache()
@@ -82,7 +92,7 @@ def move_vietocr_to_cpu():
 def move_vietocr_to_gpu():
     """Kéo VietOCR model lên GPU để sẵn sàng cho request tiếp theo."""
     global _vietocr_detector
-    if _vietocr_detector is not None:
+    if _vietocr_detector is not None and torch.cuda.is_available():
         _vietocr_detector.model.to('cuda:0')
         _vietocr_detector.config['device'] = 'cuda:0'
         print("[Recognizer] ↑ VietOCR đã chuyển lên GPU")
