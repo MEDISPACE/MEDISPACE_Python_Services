@@ -1,4 +1,4 @@
-albumentations==1.4.2
+albumentations==1.4.24
 annotated-types==0.7.0
 anyio==4.12.1
 astor==0.8.1
