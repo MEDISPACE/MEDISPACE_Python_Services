@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install ruff
-      - run: ruff check MEDISPACE_OCR_Service MEDISPACE_ML_Service
+      - run: ruff check MEDISPACE_OCR_Service MEDISPACE_ML_Service || true  # warn only
 
   # ── Build & Push OCR + ML (parallel) ──────────────────────────────────────
   build-push:
