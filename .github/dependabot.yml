@@ -1,0 +1,68 @@
+# Dependabot configuration
+
+version: 2
+updates:
+  # pip packages — OCR Service
+  - package-ecosystem: pip
+    directory: /MEDISPACE_OCR_Service
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ocr-service
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # pip packages — ML Service
+  - package-ecosystem: pip
+    directory: /MEDISPACE_ML_Service
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ml-service
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci
+
+  # Docker — OCR
+  - package-ecosystem: docker
+    directory: /MEDISPACE_OCR_Service
+    schedule:
+      interval: monthly
+      timezone: "Asia/Ho_Chi_Minh"
+    labels:
+      - dependencies
+      - docker
+
+  # Docker — ML
+  - package-ecosystem: docker
+    directory: /MEDISPACE_ML_Service
+    schedule:
+      interval: monthly
+      timezone: "Asia/Ho_Chi_Minh"
+    labels:
+      - dependencies
+      - docker
