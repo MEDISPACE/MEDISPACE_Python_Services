@@ -1,0 +1,16 @@
+{
+  "include": ["src", "main.py", "tests"],
+  "exclude": ["**/__pycache__/**", "**/*.egg-info/**"],
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Linux",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["."],
+  "reportMissingModuleSource": "none",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportGeneralTypeIssues": "none"
+}
