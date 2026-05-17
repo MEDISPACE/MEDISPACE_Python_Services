@@ -1,6 +1,6 @@
 """
 main.py - FastAPI Entry Point cho MEDISPACE OCR Service
-Pipeline: Ảnh đơn thuốc → PaddleOCR (detect) → VietOCR (recognize) → Extractor (Ollama/Gemini) → JSON
+Pipeline: Ảnh đơn thuốc → PaddleOCR (detect) → VietOCR (recognize) → Custom LLM API → JSON
 """
 # Load .env đầu tiên
 import os
@@ -12,6 +12,7 @@ import time
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from src.services.detector import detect_text_regions, get_paddle_ocr
 from src.services.recognizer import extract_full_text, get_vietocr, move_vietocr_to_cpu, move_vietocr_to_gpu
@@ -39,25 +40,12 @@ async def preload_models():
     t_start = time.time()
     get_paddle_ocr()      # Pre-load PaddleOCR
     get_vietocr()         # Pre-load VietOCR len GPU
-    
-    # Pre-load Ollama model (nếu đang dùng backend ollama)
-    backend = os.getenv("EXTRACTOR_BACKEND", "ollama").lower()
-    if backend == "ollama":
-        import requests as req
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        model_name = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-        print(f"[Startup] Đang khởi tạo Ollama ({model_name})...")
-        try:
-            req.post(f"{base_url}/api/generate", json={
-                "model": model_name,
-                "prompt": "hi",
-                "stream": False,
-                "options": {"num_predict": 1}
-            }, timeout=120)
-            print(f"[Startup] Ollama ({model_name}) đã sẵn sàng!")
-        except Exception as e:
-            print(f"[Startup] ⚠ Không thể hâm nóng Ollama: {e}")
-    
+
+    # Custom LLM API la remote service, khong can pre-load o day.
+    base_url = os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space")
+    model_name = os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf")
+    print(f"[Startup] Custom LLM API: {model_name} tai {base_url}")
+
     t_end = time.time()
     print(f"[Startup] Tat ca models da san sang! (Mat {t_end - t_start:.2f}s)")
     print(f"[Startup] Server san sang nhan request!\n")
@@ -73,15 +61,16 @@ def read_image_from_upload(file_bytes: bytes) -> np.ndarray:
 
 @app.get("/")
 async def root():
-    backend = os.getenv("EXTRACTOR_BACKEND", "ollama").lower()
-    engine_name = f"PaddleOCR + VietOCR + {'Ollama (Local LLM)' if backend == 'ollama' else 'Gemini (Cloud API)'}"
-    
+    base_url = os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space")
+    model_name = os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf")
+    engine_name = f"PaddleOCR + VietOCR + Custom LLM ({model_name} @ {base_url})"
+
     return {
         "service": "MEDISPACE OCR Service",
         "status": "running",
         "version": "1.0.0",
         "engine": engine_name,
-        "extractor_backend": backend
+        "extractor_backend": "custom"
     }
 
 
@@ -189,7 +178,7 @@ async def extract_prescription(file: UploadFile = File(...)):
 
 @app.post("/api/ocr/extract-text")
 async def extract_text_only(file: UploadFile = File(...)):
-    """Chỉ OCR text, không gọi Gemini. Dùng để debug."""
+    """Chỉ OCR text (PaddleOCR + VietOCR), không gọi LLM. Dùng để debug."""
     try:
         file_bytes = await file.read()
         image = read_image_from_upload(file_bytes)
@@ -212,3 +201,54 @@ async def extract_text_only(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi server: {str(e)}")
+
+
+# ─── Debug: Test LLM trực tiếp qua Swagger ───────────────────────────────────
+
+class TestLLMRequest(BaseModel):
+    raw_text: str = """PHÒNG KHÁM ĐA KHOA ABC\nBác sĩ: Nguyễn Văn Bình\nBệnh nhân: Trần Thị Mai, 45 tuổi, Nữ\nSĐT: 0901234567\nNgày: 15/04/2025\nChẩn đoán: Viêm họng cấp\n\nĐơn thuốc:\n1. Amoxicillin 500mg - Sáng 1 viên, Tối 1 viên - 10 viên\n2. Paracetamol 500mg - Uống khi sốt - 20 viên"""
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "raw_text": "Bác sĩ: Nguyễn Văn A\nBệnh nhân: Lê Thị B, 30 tuổi\nThuốc: Paracetamol 500mg - 2 lần/ngày - 10 viên"
+            }
+        }
+
+
+@app.post(
+    "/api/ocr/test-llm",
+    summary="[DEBUG] Test Custom LLM API bằng raw text",
+    description=(
+        "Gọi trực tiếp Custom LLM API với raw text bạn tự nhập, **bỏ qua** bước OCR ảnh.\n\n"
+        "Dùng để:\n"
+        "- Xác nhận LLM API có hoạt động không\n"
+        "- Kiểm tra chất lượng trích xuất JSON\n"
+        "- Debug prompt khi regex không đủ dữ liệu\n\n"
+        f"**Endpoint LLM:** `{os.getenv('CUSTOM_LLM_BASE_URL', 'https://llm.datateam.space')}/v1/chat/completions`\n\n"
+        f"**Model:** `{os.getenv('CUSTOM_LLM_MODEL', 'gemma-4-e4b-it.gguf')}`"
+    ),
+    tags=["Debug"]
+)
+async def test_llm_direct(body: TestLLMRequest):
+    """
+    [DEBUG] Gửi raw_text trực tiếp đến Custom LLM API và trả về JSON đơn thuốc.
+    Không cần upload ảnh, không qua PaddleOCR / VietOCR.
+    """
+    if not body.raw_text or not body.raw_text.strip():
+        raise HTTPException(status_code=400, detail="raw_text không được để trống")
+
+    from src.services.extractor import _extract_with_custom_api
+
+    t_start = time.time()
+    result = _extract_with_custom_api(body.raw_text)
+    elapsed = round(time.time() - t_start, 2)
+
+    return {
+        "success": "error" not in result,
+        "message": "Trích xuất thành công" if "error" not in result else result.get("error"),
+        "llm_seconds": elapsed,
+        "model": os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf"),
+        "base_url": os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space"),
+        "data": result
+    }
