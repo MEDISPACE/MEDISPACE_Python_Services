@@ -4,7 +4,7 @@
 # Stack: Python 3.11 + FastAPI + PaddleOCR + VietOCR
 # =====================================================
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
