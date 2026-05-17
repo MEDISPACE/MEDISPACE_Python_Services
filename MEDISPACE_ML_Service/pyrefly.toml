@@ -1,0 +1,21 @@
+# pyrefly.toml — Cấu hình Pyrefly type checker cho ML Service
+# Docs: https://pyrefly.org/configuration
+
+[project]
+# Thư mục gốc của project
+root = "."
+
+[python]
+# Python version
+version = "3.10"
+
+[search_path]
+# Thêm các path để Pyrefly tìm được module nội bộ (src.*)
+# và các third-party package đã cài trong venv
+site_package_search = true
+extra_paths = ["."]
+
+[ignore]
+# Bỏ qua lỗi không tìm được bson (từ pymongo) và các C-extension
+# Những lỗi này chỉ xảy ra khi Pyrefly chưa có venv đúng
+missing_module_source = true

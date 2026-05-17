@@ -3,6 +3,7 @@ MEDISPACE ML Service - Main Entry Point
 Port: 8002
 """
 import os
+import asyncio
 import httpx
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -57,7 +58,6 @@ async def _retrain_and_notify():
         except Exception as e:
             print(f"[ML Service] Could not notify {url} (non-critical): {e}")
 
-    import asyncio
     await asyncio.gather(*[_notify(url) for url in BE_SERVICE_URLS])
 
 
