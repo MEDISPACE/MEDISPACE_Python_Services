@@ -37,7 +37,7 @@ def make_products():
 
 @pytest.fixture
 def trained_nmf():
-    m = NMFTrendingRecommender(n_components=3)
+    m = NMFTrendingRecommender()
     interactions = make_interactions()
     products = make_products()
     m.train(interactions, products)
@@ -46,7 +46,7 @@ def trained_nmf():
 
 class TestNMFTraining:
     def test_trained_after_train(self):
-        m = NMFTrendingRecommender(n_components=3)
+        m = NMFTrendingRecommender()
         m.train(make_interactions(), make_products())
         assert m.is_trained is True
 

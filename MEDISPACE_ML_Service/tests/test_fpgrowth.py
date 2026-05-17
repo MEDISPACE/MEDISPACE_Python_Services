@@ -10,8 +10,9 @@ def make_baskets():
     Transaction baskets giả lập:
     - p1 và p2 thường mua cùng nhau
     - p3 và p4 thường mua cùng nhau
+    Cần >= 50 transactions để FP-Growth train
     """
-    return [
+    base = [
         ["p1", "p2", "p4"],
         ["p1", "p2"],
         ["p1", "p2", "p5"],
@@ -22,17 +23,14 @@ def make_baskets():
         ["p1", "p2", "p4", "p5"],
         ["p3", "p4", "p5"],
         ["p1", "p2"],
-        ["p1", "p2", "p5"],
-        ["p3", "p4"],
-        ["p1", "p2", "p4"],
-        ["p3", "p4", "p5"],
-        ["p1", "p2", "p3"],
     ]
+    # Repeat để vượt ngưỡng 50 transactions
+    return base * 6  # 60 transactions
 
 
 @pytest.fixture
 def trained_model():
-    m = FPGrowthRecommender(min_support=0.1, min_confidence=0.2)
+    m = FPGrowthRecommender()
     baskets = make_baskets()
     m.train(baskets)
     return m
@@ -40,7 +38,7 @@ def trained_model():
 
 class TestFPGrowthTraining:
     def test_trained_after_enough_transactions(self):
-        m = FPGrowthRecommender(min_support=0.1, min_confidence=0.2)
+        m = FPGrowthRecommender()
         m.train(make_baskets())
         assert m.is_trained is True
 
@@ -51,7 +49,7 @@ class TestFPGrowthTraining:
 
     def test_requires_min_transactions(self):
         m = FPGrowthRecommender()
-        # Ít hơn 50 transactions mặc định → không train
+        # ít hơn 50 transactions mặc định → không train
         m.train([["p1", "p2"]] * 3)
         assert m.is_trained is False
 
