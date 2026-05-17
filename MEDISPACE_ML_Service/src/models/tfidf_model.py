@@ -27,6 +27,7 @@ class TFIDFRecommender:
         self.product_index: Dict[str, int] = {}   # productId -> row index
         self.index_product: Dict[int, str] = {}   # row index -> productId
         self.products_df: Optional[pd.DataFrame] = None
+        self.feature_texts: List[str] = []        # raw text per product (for keyword matching)
 
     def _build_feature_text(self, product: Dict) -> str:
         """
@@ -75,13 +76,13 @@ class TFIDFRecommender:
         # Build product index
         self.product_index = {}
         self.index_product = {}
-        feature_texts = []
+        self.feature_texts = []
 
         for i, product in enumerate(products):
             pid = str(product["_id"])
             self.product_index[pid] = i
             self.index_product[i] = pid
-            feature_texts.append(self._build_feature_text(product))
+            self.feature_texts.append(self._build_feature_text(product))
 
         # Store metadata
         self.products_df = pd.DataFrame([{
@@ -96,7 +97,7 @@ class TFIDFRecommender:
         } for p in products])
 
         # Fit TF-IDF
-        self.tfidf_matrix = self.vectorizer.fit_transform(feature_texts)
+        self.tfidf_matrix = self.vectorizer.fit_transform(self.feature_texts)
         self.is_trained = True
 
         # Save to disk
@@ -109,6 +110,7 @@ class TFIDFRecommender:
         joblib.dump(self.tfidf_matrix, os.path.join(SAVED_MODELS_DIR, "tfidf_matrix.pkl"))
         joblib.dump(self.product_index, os.path.join(SAVED_MODELS_DIR, "tfidf_index.pkl"))
         joblib.dump(self.index_product, os.path.join(SAVED_MODELS_DIR, "tfidf_index_rev.pkl"))
+        joblib.dump(self.feature_texts, os.path.join(SAVED_MODELS_DIR, "tfidf_feature_texts.pkl"))
         if self.products_df is not None:
             self.products_df.to_pickle(os.path.join(SAVED_MODELS_DIR, "tfidf_products_df.pkl"))
 
@@ -119,6 +121,11 @@ class TFIDFRecommender:
             self.product_index = joblib.load(os.path.join(SAVED_MODELS_DIR, "tfidf_index.pkl"))
             self.index_product = joblib.load(os.path.join(SAVED_MODELS_DIR, "tfidf_index_rev.pkl"))
             self.products_df = pd.read_pickle(os.path.join(SAVED_MODELS_DIR, "tfidf_products_df.pkl"))
+            # feature_texts optional — có thể không tồn tại trên model cũ
+            try:
+                self.feature_texts = joblib.load(os.path.join(SAVED_MODELS_DIR, "tfidf_feature_texts.pkl"))
+            except Exception:
+                self.feature_texts = []
             self.is_trained = True
             print(f"[TF-IDF] Loaded from disk ({len(self.product_index)} products)")
             return True
@@ -171,34 +178,60 @@ class TFIDFRecommender:
         limit: int = 10
     ) -> List[str]:
         """
-        Goi y cho Pharmacist dua tren:
-        1. Products trong don thuoc hien tai (TF-IDF related)
-        2. Loc bo san pham trong allergies keywords
+        Gợi ý cho Pharmacist dựa trên medical context.
+
+        Chiến lược:
+          1. Tìm sản phẩm liên quan (TF-IDF) tới các thuốc trong đơn
+          2. Boost +0.3 nếu sản phẩm liên quan đến bệnh mãn tính của bệnh nhân
+          3. Loại bỏ sản phẩm nếu tên/thành phần có trong danh sách dị ứng
+          4. Loại bỏ sản phẩm đã có trong đơn thuốc
         """
         if not self.is_trained:
             return []
 
         candidate_scores: Dict[str, float] = {}
 
-        # 1. Lay related products tu cac san pham trong don thuoc
+        # 1. Lấy related products từ các sản phẩm trong đơn thuốc
         for pid in prescription_product_ids:
             related = await self.get_related(pid, limit=20, exclude_prescription_mismatch=False)
             for r_pid in related:
-                idx = self.product_index.get(pid)
+                p_idx = self.product_index.get(pid)
                 r_idx = self.product_index.get(r_pid)
-                if idx is not None and r_idx is not None:
-                    sim = cosine_similarity(self.tfidf_matrix[idx], self.tfidf_matrix[r_idx]).flatten()[0]
-                    candidate_scores[r_pid] = max(candidate_scores.get(r_pid, 0), float(sim))
+                if p_idx is not None and r_idx is not None:
+                    sim = float(
+                        cosine_similarity(self.tfidf_matrix[p_idx], self.tfidf_matrix[r_idx]).flatten()[0]
+                    )
+                    candidate_scores[r_pid] = max(candidate_scores.get(r_pid, 0), sim)
 
-        # 2. Boost theo chronic diseases (keyword match trong indications)
-        if chronic_diseases and self.products_df is not None:
-            # Uu tien products lien quan den benh man tinh
-            pass  # TODO: implement keyword boost nếu cần
+        # 2. Boost theo chronic diseases (keyword match trong feature text)
+        if chronic_diseases and self.feature_texts:
+            for disease in chronic_diseases:
+                disease_lower = disease.lower().strip()
+                if not disease_lower:
+                    continue
+                for idx, text in enumerate(self.feature_texts):
+                    pid = self.index_product.get(idx)
+                    if pid and pid not in prescription_product_ids and disease_lower in text.lower():
+                        candidate_scores[pid] = candidate_scores.get(pid, 0) + 0.3
 
-        # 3. Loai bo cac san pham da co trong don thuoc
+        # 3. Loại bỏ sản phẩm khớp với dị ứng của bệnh nhân
+        if allergies and self.feature_texts:
+            allergy_blocked = set()
+            for allergy in allergies:
+                allergy_lower = allergy.lower().strip()
+                if not allergy_lower:
+                    continue
+                for idx, text in enumerate(self.feature_texts):
+                    pid = self.index_product.get(idx)
+                    if pid and allergy_lower in text.lower():
+                        allergy_blocked.add(pid)
+            for pid in allergy_blocked:
+                candidate_scores.pop(pid, None)
+
+        # 4. Loại bỏ sản phẩm đã có trong đơn thuốc
         for pid in prescription_product_ids:
             candidate_scores.pop(pid, None)
 
-        # Sort va return
+        # Sort và return top-N
         sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
         return [pid for pid, _ in sorted_candidates[:limit]]

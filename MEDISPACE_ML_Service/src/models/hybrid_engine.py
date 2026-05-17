@@ -3,7 +3,7 @@ hybrid_engine.py - Dieu phoi logic giua cac ML models va fallback chain
 """
 import os
 from typing import List, Tuple, Dict
-from src.data.mongo_loader import mongo_loader
+from src.data.mongo_loader import mongo_loader, runtime_loader
 from src.models.tfidf_model import TFIDFRecommender
 from src.models.fpgrowth_model import FPGrowthRecommender
 from src.models.nmf_trending import NMFTrendingRecommender
@@ -78,7 +78,8 @@ class HybridEngine:
                 return results, algo
 
         # Try NMF filtered by user's top categories
-        top_categories = mongo_loader.get_user_top_categories(user_id)
+        # Sử dụng runtime_loader (persistent connection) — mongo_loader đã disconnect sau train_all()
+        top_categories = runtime_loader.get_user_top_categories(user_id)
         if top_categories:
             results = await self.nmf.get_filtered_by_categories(top_categories, limit)
             if results:
