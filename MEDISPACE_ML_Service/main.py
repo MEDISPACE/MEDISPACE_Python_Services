@@ -28,22 +28,37 @@ hybrid_engine = HybridEngine(tfidf_model, fpgrowth_model, nmf_model, svd_model)
 cache = MongoCache()
 scheduler = AsyncIOScheduler()
 
-BE_URL = os.getenv("BE_SERVICE_URL", "http://backend:8000")
+BE_SERVICE_URL = os.getenv("BE_SERVICE_URL", "")
+# Support nhiều URL (cách nhau bằng dấu phẩy) — notify tất cả sau retrain
+BE_SERVICE_URLS = [
+    url.strip()
+    for url in os.getenv("BE_SERVICE_URLS", BE_SERVICE_URL).split(",")
+    if url.strip()
+]
 
 # ─── Retrain helper ───────────────────────────────────────────────
 async def _retrain_and_notify():
-    """Train tất cả models, sau đó notify BE để flush Redis cache."""
+    """Train tất cả models, sau đó notify tất cả BE instances để flush Redis cache."""
     await hybrid_engine.train_all()
     # Invalidate toàn bộ ML cache sau khi retrain
     await cache.invalidate_pattern("")
     print("[ML Service] ML cache invalidated after retrain.")
-    # Notify BE để flush recommendation Redis keys
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(f"{BE_URL}/internal/flush-recommendation-cache")
-        print("[ML Service] Notified BE to flush recommendation cache.")
-    except Exception as e:
-        print(f"[ML Service] Could not notify BE (non-critical): {e}")
+
+    # Notify tất cả BE URLs song song (fire-and-forget, non-blocking)
+    if not BE_SERVICE_URLS:
+        return
+
+    async def _notify(url: str):
+        endpoint = f"{url.rstrip('/')}/internal/flush-recommendation-cache"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(endpoint)
+            print(f"[ML Service] Notified {url} to flush cache. ✓")
+        except Exception as e:
+            print(f"[ML Service] Could not notify {url} (non-critical): {e}")
+
+    import asyncio
+    await asyncio.gather(*[_notify(url) for url in BE_SERVICE_URLS])
 
 
 # ─── Startup / Shutdown ───────────────────────────────────────────
