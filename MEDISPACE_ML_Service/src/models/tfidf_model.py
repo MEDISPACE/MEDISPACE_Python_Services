@@ -165,9 +165,88 @@ class TFIDFRecommender:
                     if diff_idx is not None:
                         sim_scores[diff_idx] *= 0.3  # giam trong so, khong loai han
 
-        # Get top-N
+        # Get top-N (raw candidates trước MMR)
         top_indices = np.argsort(sim_scores)[::-1][:limit]
         return [self.index_product[i] for i in top_indices if sim_scores[i] > 0]
+
+    async def get_related_diverse(
+        self,
+        product_id: str,
+        limit: int = 8,
+        lambda_mmr: float = 0.7,
+        candidate_pool: int = 30,
+        exclude_prescription_mismatch: bool = True
+    ) -> List[str]:
+        """
+        Sản phẩm liên quan với diversity via Maximal Marginal Relevance (MMR).
+
+        MMR score = λ × relevance(c, query) − (1−λ) × max_similarity(c, selected)
+
+        lambda_mmr = 1.0 → pure relevance (giống get_related)
+        lambda_mmr = 0.0 → pure diversity
+        lambda_mmr = 0.7 → 70% relevance, 30% diversity (mặc định khuyến nghị)
+
+        Tránh filter bubble: không show 8 sản phẩm gần như giống nhau.
+        """
+        if not self.is_trained or self.tfidf_matrix is None:
+            return []
+
+        idx = self.product_index.get(product_id)
+        if idx is None:
+            return []
+
+        # Lấy pool candidates rộng hơn từ get_related
+        candidates = await self.get_related(
+            product_id,
+            limit=candidate_pool,
+            exclude_prescription_mismatch=exclude_prescription_mismatch
+        )
+        if not candidates:
+            return []
+
+        # Lấy vector của query product
+        query_vec = self.tfidf_matrix[idx]
+
+        # Tính relevance score cho từng candidate
+        candidate_indices = [self.product_index[pid] for pid in candidates if pid in self.product_index]
+        if not candidate_indices:
+            return candidates[:limit]
+
+        # Ma trận similarity giữa candidates và query
+        candidate_matrix = self.tfidf_matrix[candidate_indices]
+        relevance_scores = cosine_similarity(query_vec, candidate_matrix).flatten()
+
+        # Ma trận similarity giữa candidates với nhau (dùng cho diversity penalty)
+        inter_sim = cosine_similarity(candidate_matrix, candidate_matrix)
+
+        # MMR selection
+        selected_local_indices: List[int] = []  # index trong candidate_indices
+        remaining = list(range(len(candidate_indices)))
+
+        # Chọn candidate đầu tiên: relevance cao nhất
+        best = int(np.argmax(relevance_scores))
+        selected_local_indices.append(best)
+        remaining.remove(best)
+
+        while len(selected_local_indices) < min(limit, len(candidate_indices)) and remaining:
+            best_mmr = -1.0
+            best_idx = remaining[0]
+
+            for i in remaining:
+                rel = float(relevance_scores[i])
+                # Max similarity với các item đã chọn
+                max_sim_to_selected = max(
+                    float(inter_sim[i, s]) for s in selected_local_indices
+                )
+                mmr = lambda_mmr * rel - (1.0 - lambda_mmr) * max_sim_to_selected
+                if mmr > best_mmr:
+                    best_mmr = mmr
+                    best_idx = i
+
+            selected_local_indices.append(best_idx)
+            remaining.remove(best_idx)
+
+        return [candidates[i] for i in selected_local_indices]
 
     async def get_pharmacist_suggestions(
         self,
