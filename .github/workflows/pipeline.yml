@@ -70,6 +70,6 @@ jobs:
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.INFRA_PAT }}
-          repository: nhthongdev/MEDISPACE_ECommerce_BE
+          repository: MEDISPACE/MEDISPACE_ECommerce_BE
           event-type: deploy
           client-payload: '{"service": "${{ matrix.service }}", "image_tag": "${{ github.sha }}"}'
