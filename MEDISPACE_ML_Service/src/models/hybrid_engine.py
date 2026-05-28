@@ -3,7 +3,7 @@ hybrid_engine.py - Dieu phoi logic giua cac ML models va fallback chain
 """
 import os
 from typing import List, Tuple, Dict
-from src.data.mongo_loader import mongo_loader
+from src.data.mongo_loader import mongo_loader, runtime_loader
 from src.models.tfidf_model import TFIDFRecommender
 from src.models.fpgrowth_model import FPGrowthRecommender
 from src.models.nmf_trending import NMFTrendingRecommender
@@ -78,7 +78,8 @@ class HybridEngine:
                 return results, algo
 
         # Try NMF filtered by user's top categories
-        top_categories = mongo_loader.get_user_top_categories(user_id)
+        # Sử dụng runtime_loader (persistent connection) — mongo_loader đã disconnect sau train_all()
+        top_categories = runtime_loader.get_user_top_categories(user_id)
         if top_categories:
             results = await self.nmf.get_filtered_by_categories(top_categories, limit)
             if results:
@@ -90,8 +91,8 @@ class HybridEngine:
 
     async def get_post_purchase(self, order_product_ids: List[str], limit: int = 8) -> List[str]:
         """
-        Goi y sau khi dat hang.
-        Strategy: FP-Growth associated + TF-IDF related, khong trung lap
+        Gợi ý sau khi đặt hàng.
+        Strategy: FP-Growth associated + TF-IDF MMR fill, không trùng lặp
         """
         seen = set(order_product_ids)
         results = []
@@ -104,10 +105,10 @@ class HybridEngine:
                     seen.add(r)
                     results.append(r)
 
-        # Fill bang TF-IDF neu chua du
+        # Fill bằng TF-IDF MMR nếu chưa đủ
         if len(results) < limit:
             for pid in order_product_ids:
-                related = await self.tfidf.get_related(pid, limit=6)
+                related = await self.tfidf.get_related_diverse(pid, limit=6, lambda_mmr=0.65)
                 for r in related:
                     if r not in seen:
                         seen.add(r)
@@ -118,6 +119,86 @@ class HybridEngine:
                     break
 
         return results[:limit]
+
+    async def get_replenishment(self, user_id: str, limit: int = 5) -> List[str]:
+        """
+        Predictive Replenishment: sản phẩm user cần mua lại.
+
+        Phân tích chu kỳ mua hàng:
+        - Nếu user mua sản phẩm X định kỳ (≥2 lần), tính avg interval
+        - Nếu đã qua ≥80% interval kể từ lần mua cuối → gợi ý reorder
+
+        Use case: thuốc uống hàng ngày, vitamin, thực phẩm chức năng.
+        """
+        from datetime import datetime, timedelta
+
+        runtime_loader._ensure_connected()
+        db = runtime_loader._loader.db
+        if db is None:
+            return []
+
+        try:
+            from bson import ObjectId
+            uid = ObjectId(user_id)
+        except Exception:
+            return []
+
+        try:
+            # Lấy tất cả orders của user (không filter cancelled)
+            orders = list(db["orders"].find(
+                {"userId": uid, "orderStatus": {"$nin": ["cancelled"]}},
+                {"items": 1, "createdAt": 1}
+            ).sort("createdAt", 1))
+
+            if len(orders) < 2:
+                return []
+
+            # Tính purchase timeline per product
+            purchase_timeline: Dict[str, List[datetime]] = {}
+            for order in orders:
+                created_at = order.get("createdAt")
+                if not created_at:
+                    continue
+                for item in order.get("items", []):
+                    pid = str(item.get("productId", ""))
+                    if not pid:
+                        continue
+                    if pid not in purchase_timeline:
+                        purchase_timeline[pid] = []
+                    purchase_timeline[pid].append(created_at)
+
+            # Tìm sản phẩm đến hạn mua lại
+            now = datetime.now()
+            due_products: List[tuple] = []  # (pid, overdue_ratio)
+
+            for pid, dates in purchase_timeline.items():
+                if len(dates) < 2:
+                    continue  # Cần ≥2 lần mua để tính interval
+
+                # Tính avg interval (ngày)
+                intervals = [
+                    (dates[i + 1] - dates[i]).days
+                    for i in range(len(dates) - 1)
+                ]
+                avg_interval = sum(intervals) / len(intervals)
+                if avg_interval < 7:  # Bỏ qua interval < 1 tuần (noise)
+                    continue
+
+                last_purchase = dates[-1]
+                days_since_last = (now - last_purchase).days
+                overdue_ratio = days_since_last / avg_interval
+
+                # Gợi ý khi đã qua ≥80% chu kỳ
+                if overdue_ratio >= 0.8:
+                    due_products.append((pid, overdue_ratio))
+
+            # Sort theo mức độ "quá hạn" — sản phẩm cần nhất lên đầu
+            due_products.sort(key=lambda x: x[1], reverse=True)
+            return [pid for pid, _ in due_products[:limit]]
+
+        except Exception as e:
+            print(f"[HybridEngine] get_replenishment error: {e}")
+            return []
 
     async def get_pharmacist_suggestions(
         self,
