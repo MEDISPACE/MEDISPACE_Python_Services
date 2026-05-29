@@ -18,17 +18,17 @@ MENTAL_HEALTH_KEYWORDS = [
     'muốn biến mất', 'chán sống', 'sống không có ý nghĩa'
 ]
 
-# Dùng regex để giảm false positive — chỉ block khi có ngữ cảnh rõ ràng muốn mua/dùng kê đơn
+# Chỉ block khi có ý định mua/dùng thuốc kê đơn rõ ràng
+# Câu hỏi thông tin về OTC/Rx để LLM xử lý qua system prompt
 PRESCRIPTION_PATTERNS = [
+    # Yêu cầu có đơn thuốc / kê đơn
     r'\bkê đơn\b',
-    r'\bcho tôi mua\b',
     r'\bcần đơn thuốc\b',
-    r'\bliều bao nhiêu\b',
-    r'\buống mấy viên\b',
-    r'\btiêm bao nhiêu\b',
     r'\bđơn thuốc\b',
-    # "kháng sinh" chỉ block khi đi kèm ý định mua/dùng, không block câu hỏi thông tin
-    r'\b(mua|bán|kê|cho tôi|cần|tôi dùng|dùng được)\s+(thuốc\s+)?(kháng sinh|antibiotic)\b',
+    # Yêu cầu mua thuốc kê đơn cụ thể (có tên thuốc + ý định mua)
+    r'\b(mua|bán|cho tôi mua|tôi cần mua)\s+(thuốc\s+)?(káng sinh|antibiotic|amoxicillin|augmentin|cephalexin|metronidazole|ciprofloxacin|azithromycin|clarithromycin)\b',
+    # Tiêm thuốc (luôn cần chỉ định bác sĩ)
+    r'\btiêm\s+(thuốc|vắc\s*xin|insulin|morphine)\b',
 ]
 
 
@@ -65,9 +65,10 @@ EMERGENCY_RESPONSE = (
     "Tôi đang tự động chuyển cuộc hội thoại này cho Dược sĩ để hỗ trợ bạn."
 )
 
+# Dùng khi user yêu cầu MUA/KÊ ĐƠN thuốc kê đơn — escalate sang Dược sĩ
 PRESCRIPTION_RESPONSE = (
-    "Câu hỏi này liên quan đến kê đơn hoặc tư vấn y khoa chuyên sâu. "
-    "Để đảm bảo an toàn, tôi sẽ chuyển yêu cầu này cho Dược sĩ của Medispace để tư vấn trực tiếp cho bạn nhé."
+    "Yêu cầu này liên quan đến thuốc kê đơn cần có chỉ định của bác sĩ. "
+    "Để đảm bảo an toàn, tôi sẽ kết nối bạn với Dược sĩ của Medispace để hỗ trợ trực tiếp nhé."
 )
 
 MENTAL_HEALTH_RESPONSE = (
