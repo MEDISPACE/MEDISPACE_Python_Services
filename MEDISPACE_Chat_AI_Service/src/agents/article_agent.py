@@ -30,12 +30,24 @@ _OptStrList = Optional[List[str]]
 # ─── Topic guardrail ─────────────────────────────────────────────────────────
 # Fast-path keyword check: nếu có bất kỳ từ nào này → đi thẳng, không gọi LLM phân loại
 _HEALTH_KEYWORDS_FASTPATH = [
+    # Bệnh lý phổ biến
     "bệnh", "đau", "viêm", "ung thư", "tiểu đường", "huyết áp", "tim", "gan", "thận",
     "phổi", "dạ dày", "khớp", "xương", "thần kinh", "dị ứng", "cảm", "sốt", "ho",
+    # Sức khỏe & dinh dưỡng
     "sức khỏe", "dinh dưỡng", "vitamin", "thuốc", "dược", "kháng sinh", "vaccine",
     "điều trị", "phòng ngừa", "thực phẩm chức năng", "bổ sung", "da", "nám",
-    "lão hóa", "collagen", "bác sĩ", "dược sĩ", "mang thai", "trẻ em",
-    "health", "medical", "drug", "supplement", "wellness", "treatment",
+    "lão hóa", "collagen", "bác sĩ", "dược sĩ",
+    # Nhi khoa & sản phụ khoa
+    "trẻ em", "trẻ sơ sinh", "trẻ nhỏ", "trẻ mới sinh", "sơ sinh", "nhi",
+    "nhi khoa", "mang thai", "thai kỳ", "thai nhi", "sản phụ", "hậu sản",
+    "tiêm chủng", "tiêm vaccine", "cho con bú", "sữa mẹ", "dinh dưỡng trẻ",
+    "phát triển trẻ", "cân nặng trẻ", "chiều cao trẻ",
+    # Tiêm chủng & phòng bệnh
+    "vắc xin", "vắc-xin", "chủng ngừa", "miễn dịch",
+    # English fallback
+    "health", "medical", "drug", "supplement", "wellness", "treatment", "newborn",
+    "infant", "pediatric", "maternal", "pregnancy", "vaccination",
+    # Dược phẩm phổ biến
     "paracetamol", "ibuprofen", "aspirin", "probiotic", "omega",
 ]
 
