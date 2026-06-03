@@ -19,7 +19,7 @@ LLM_BASE = os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space").rstrip
 LLM_MODEL = os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf")
 
 # Dùng token ít hơn cho các tác vụ assist (nhanh hơn)
-LLM_MAX_TOKENS_ASSIST = int(os.getenv("ARTICLE_LLM_MAX_TOKENS_ASSIST", "1024"))
+LLM_MAX_TOKENS_ASSIST = int(os.getenv("ARTICLE_LLM_MAX_TOKENS_ASSIST", "2048"))
 LLM_MAX_TOKENS_ASK = int(os.getenv("ARTICLE_LLM_MAX_TOKENS_ASK", "768"))
 
 AssistAction = Literal["outline", "seo", "excerpt", "faq", "quality_check", "sources"]
@@ -61,11 +61,12 @@ Danh mục: {category}
 Từ khóa/Tag: {tags}
 
 Yêu cầu:
-- Dàn ý gồm 4-6 mục chính, mỗi mục có 2-3 ý phụ.
+- Dàn ý gồm ĐÚNG 4-5 mục chính (không quá 5), mỗi mục có 2-3 ý phụ.
 - Phù hợp với đối tượng người dùng phổ thông, dễ hiểu.
 - Đảm bảo tính chính xác y tế, không đưa ra lời khuyên điều trị cá nhân.
-- Trả về JSON hợp lệ duy nhất, không thêm văn bản ngoài JSON:
-{{"outline": ["Mục 1: ...", "Mục 1.1: ...", "Mục 2: ...", ...]}}
+- Giữ mỗi ý ngắn gọn (tối đa 15 từ).
+- Trả về JSON hợp lệ HOÀN CHỈNH, đóng đúng dấu ngoặc, không thêm văn bản ngoài JSON:
+{{"outline": ["Mục 1: ...", "Mục 1.1: ...", "Mục 1.2: ...", "Mục 2: ...", ...]}}
 """
 
 _SEO_PROMPT = """Bạn là chuyên gia SEO cho website dược phẩm / sức khỏe Medispace.
@@ -209,8 +210,6 @@ def _extract_json(raw: str, action: str = "") -> dict:
         pass
 
     # Tang 3: LLM tra bare JSON array [...] khong co wrapper {}
-    # Vi du: LLM tra ra:  "outline": [\n  "Muc 1",\n  "Muc 2"\n]
-    # -> tim array, wrap vao dung key cua action
     arr_match = re.search(r"\[[\s\S]*\]", cleaned)
     if arr_match:
         try:
@@ -225,6 +224,44 @@ def _extract_json(raw: str, action: str = "") -> dict:
                 return {key: arr}
         except json.JSONDecodeError:
             pass
+
+    # Tang 4: JSON bi cat nua chung (truncated) — thu recover phan da co
+    # Vi du: {"outline": ["Muc 1", "Muc 1.1", "Muc 2   <-- bi cat o day
+    # -> Tim tat ca cac string item da duoc parse duoc tu array mo
+    if action in ("outline", "faq", "sources"):
+        # Tim vi tri mo array
+        arr_start = cleaned.find("[")
+        if arr_start != -1:
+            partial = cleaned[arr_start:]
+            # Thu dong array + object roi parse
+            for suffix in ("]}", "]", "\"]}"):
+                try:
+                    recovered = json.loads(partial + suffix)
+                    if isinstance(recovered, list) and recovered:
+                        key_map = {"outline": "outline", "sources": "sourceTopics", "faq": "faq"}
+                        key = key_map.get(action, "outline")
+                        logger.warning(
+                            "[ArticleAgent] Recovered truncated JSON for action='%s', got %d items",
+                            action, len(recovered)
+                        )
+                        return {key: recovered}
+                except json.JSONDecodeError:
+                    continue
+            # Thu trich tung string item bang regex
+            items_found = re.findall(r'"([^"]{3,})"', partial)
+            # Bo cac item la JSON syntax
+            items_found = [
+                it for it in items_found
+                if not re.match(r'^[a-z_]+$', it)  # khong phai JSON key
+            ]
+            if items_found:
+                key_map = {"outline": "outline", "sources": "sourceTopics", "faq": "faq"}
+                key = key_map.get(action, "outline")
+                logger.warning(
+                    "[ArticleAgent] Regex-extracted %d items from truncated response for action='%s'",
+                    len(items_found), action
+                )
+                return {key: items_found}
 
     # Smart fallback: LLM tra plain text hoan toan
     logger.warning(
