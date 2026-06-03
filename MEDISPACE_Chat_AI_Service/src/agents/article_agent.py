@@ -186,6 +186,74 @@ def _truncate(text: Optional[str], max_chars: int = 800) -> str:
     return text[:max_chars] + "..."
 
 
+def _json_string_value(value: str) -> str:
+    """Decode a JSON string fragment captured without the wrapping quotes."""
+    try:
+        return json.loads(f'"{value}"').strip()
+    except json.JSONDecodeError:
+        return value.replace('\\"', '"').strip()
+
+
+def _extract_faq_pairs_from_text(text: str) -> List[Dict[str, str]]:
+    """Recover complete FAQ question/answer pairs from valid or truncated JSON text."""
+    pairs: List[Dict[str, str]] = []
+    seen = set()
+    pattern = re.compile(
+        r'"question"\s*:\s*"(?P<question>(?:\\.|[^"\\])*)"\s*,\s*"answer"\s*:\s*"(?P<answer>(?:\\.|[^"\\])*)"',
+        re.IGNORECASE,
+    )
+
+    for match in pattern.finditer(text):
+        question = _json_string_value(match.group("question"))
+        answer = _json_string_value(match.group("answer"))
+        key = (question.lower(), answer.lower())
+        if len(question) >= 8 and len(answer) >= 20 and key not in seen:
+            pairs.append({"question": question, "answer": answer})
+            seen.add(key)
+
+    return pairs[:5]
+
+
+def _normalize_faq(value: object) -> List[Dict[str, str]]:
+    if isinstance(value, list):
+        normalized: List[Dict[str, str]] = []
+        for item in value:
+            if isinstance(item, dict):
+                question = str(item.get("question", "")).strip()
+                answer = str(item.get("answer", "")).strip()
+                if len(question) >= 8 and len(answer) >= 20:
+                    normalized.append({"question": question, "answer": answer})
+            elif isinstance(item, str):
+                recovered = _extract_faq_pairs_from_text(item)
+                normalized.extend(recovered)
+        return normalized[:5]
+
+    if isinstance(value, str):
+        return _extract_faq_pairs_from_text(value)
+
+    return []
+
+
+def _normalize_parsed_result(parsed: dict, action: str) -> dict:
+    if action != "faq":
+        return parsed
+
+    faq = _normalize_faq(parsed.get("faq"))
+    if faq:
+        return {**parsed, "faq": faq}
+
+    recovered = _extract_faq_pairs_from_text(json.dumps(parsed, ensure_ascii=False))
+    if recovered:
+        return {**parsed, "faq": recovered}
+
+    return {
+        "faq": [],
+        "suggestions": [
+            "AI chưa tạo được FAQ hợp lệ. Hãy thử chạy lại hoặc bổ sung thêm nội dung bài viết trước khi tạo FAQ."
+        ],
+    }
+
+
 def _extract_json(raw: str, action: str = "") -> dict:
     """
     Trích xuất JSON từ response LLM.
@@ -199,13 +267,13 @@ def _extract_json(raw: str, action: str = "") -> dict:
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if match:
         try:
-            return json.loads(match.group())
+            return _normalize_parsed_result(json.loads(match.group()), action)
         except json.JSONDecodeError:
             pass
 
     # Tang 2: Parse toan chuoi
     try:
-        return json.loads(cleaned)
+        return _normalize_parsed_result(json.loads(cleaned), action)
     except json.JSONDecodeError:
         pass
 
@@ -221,7 +289,7 @@ def _extract_json(raw: str, action: str = "") -> dict:
                     "[ArticleAgent] Bare JSON array found for action='%s', wrapping as key='%s'",
                     action, key
                 )
-                return {key: arr}
+                return _normalize_parsed_result({key: arr}, action)
         except json.JSONDecodeError:
             pass
 
@@ -233,6 +301,15 @@ def _extract_json(raw: str, action: str = "") -> dict:
         arr_start = cleaned.find("[")
         if arr_start != -1:
             partial = cleaned[arr_start:]
+            if action == "faq":
+                faq_pairs = _extract_faq_pairs_from_text(partial)
+                if faq_pairs:
+                    logger.warning(
+                        "[ArticleAgent] Recovered %d FAQ pairs from truncated response",
+                        len(faq_pairs)
+                    )
+                    return {"faq": faq_pairs}
+
             # Thu dong array + object roi parse
             for suffix in ("]}", "]", "\"]}"):
                 try:
@@ -244,9 +321,10 @@ def _extract_json(raw: str, action: str = "") -> dict:
                             "[ArticleAgent] Recovered truncated JSON for action='%s', got %d items",
                             action, len(recovered)
                         )
-                        return {key: recovered}
+                        return _normalize_parsed_result({key: recovered}, action)
                 except json.JSONDecodeError:
                     continue
+
             # Thu trich tung string item bang regex
             items_found = re.findall(r'"([^"]{3,})"', partial)
             # Bo cac item la JSON syntax
@@ -261,6 +339,16 @@ def _extract_json(raw: str, action: str = "") -> dict:
                     "[ArticleAgent] Regex-extracted %d items from truncated response for action='%s'",
                     len(items_found), action
                 )
+                if action == "faq":
+                    faq_pairs = _extract_faq_pairs_from_text(partial)
+                    if faq_pairs:
+                        return {"faq": faq_pairs}
+                    return {
+                        "faq": [],
+                        "suggestions": [
+                            "AI trả về FAQ chưa hoàn chỉnh. Hãy chạy lại để lấy câu hỏi/câu trả lời đầy đủ."
+                        ],
+                    }
                 return {key: items_found}
 
     # Smart fallback: LLM tra plain text hoan toan
@@ -305,8 +393,15 @@ def _extract_json(raw: str, action: str = "") -> dict:
         return {"excerpt": cleaned[:300]}
 
     if action == "faq":
-        # Cố tạo 1 FAQ entry từ toàn bộ text
-        return {"faq": [{"question": "Thông tin thêm", "answer": cleaned[:500]}]}
+        faq_pairs = _extract_faq_pairs_from_text(cleaned)
+        if faq_pairs:
+            return {"faq": faq_pairs}
+        return {
+            "faq": [],
+            "suggestions": [
+                "AI chưa tạo được FAQ hợp lệ. Hãy thử chạy lại hoặc bổ sung thêm nội dung bài viết trước khi tạo FAQ."
+            ],
+        }
 
     if action == "quality_check":
         return {"warnings": [], "suggestions": items or [cleaned]}
