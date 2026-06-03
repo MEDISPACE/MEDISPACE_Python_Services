@@ -5,6 +5,7 @@ Port: 8003
 """
 import os
 import logging
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from src.agents.pharmacy_agent import PharmacyAgent
+from src.agents.article_agent import article_agent
 
 load_dotenv()
 
@@ -28,7 +30,7 @@ agent = PharmacyAgent()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🤖 Medispace Chat AI Service starting on port %s", os.getenv("PORT", "8001"))
+    logger.info("🤖 Medispace Chat AI Service starting on port %s", os.getenv("PORT", "8003"))
     logger.info("🔗 Gemma API: %s | Model: %s", os.getenv("CUSTOM_LLM_BASE_URL"), os.getenv("CUSTOM_LLM_MODEL"))
     yield
     logger.info("Chat AI Service shutting down.")
@@ -37,7 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Medispace Chat AI Service",
     description="AI Pharmacy Assistant using Gemma — fallback khi dược sĩ offline",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -48,6 +50,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ─── Chat Models ──────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     message: str
@@ -64,15 +68,52 @@ class ChatResponse(BaseModel):
     products_suggested: list    # Sản phẩm RAG gợi ý (Phase 2)
 
 
+# ─── Article AI Models ────────────────────────────────────────────────────────
+
+class ArticleAssistRequest(BaseModel):
+    action: str                         # "outline"|"seo"|"excerpt"|"faq"|"quality_check"|"sources"
+    title: Optional[str] = ""
+    excerpt: Optional[str] = ""
+    content: Optional[str] = ""
+    category_name: Optional[str] = ""
+    tags: Optional[List[str]] = None
+
+
+class ArticleAssistResponse(BaseModel):
+    action: str
+    result: dict                        # Tuỳ action: outline[], faq[], metaTitle, warnings[]...
+
+
+class ArticleAskRequest(BaseModel):
+    question: str
+    title: Optional[str] = ""
+    excerpt: Optional[str] = ""
+    content: Optional[str] = ""
+    category_name: Optional[str] = ""
+    tags: Optional[List[str]] = None
+
+
+class ArticleAskResponse(BaseModel):
+    answer: str
+    suggested_questions: List[str] = []
+    is_escalated: bool = False
+
+
+# ─── Health ───────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "service": "medispace-chat-ai",
+        "version": "1.1.0",
         "model": os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf"),
         "llm_url": os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space"),
+        "endpoints": ["/chat", "/chat/stream", "/article/assist", "/article/ask"],
     }
 
+
+# ─── Chat Endpoints ───────────────────────────────────────────────────────────
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
@@ -108,6 +149,79 @@ async def chat_stream(req: ChatRequest):
         )
     except Exception as e:
         logger.error("[/chat/stream] Error: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
+
+
+# ─── Article AI Endpoints ─────────────────────────────────────────────────────
+
+@app.post("/article/assist", response_model=ArticleAssistResponse)
+async def article_assist(req: ArticleAssistRequest):
+    """
+    Hỗ trợ tác giả (Pharmacist / Admin) soạn bài viết sức khỏe.
+
+    actions:
+      - outline       → Dàn ý bài viết chi tiết
+      - seo           → metaTitle, metaDescription, keywords
+      - excerpt       → Tóm tắt (excerpt) hấp dẫn
+      - faq           → Câu hỏi thường gặp cuối bài
+      - quality_check → Kiểm tra chất lượng & cảnh báo y tế
+      - sources       → Gợi ý nguồn tham khảo uy tín
+    """
+    valid_actions = {"outline", "seo", "excerpt", "faq", "quality_check", "sources"}
+    if req.action not in valid_actions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"action không hợp lệ: '{req.action}'. Hợp lệ: {sorted(valid_actions)}"
+        )
+    if not req.title or not req.title.strip():
+        raise HTTPException(status_code=400, detail="title không được để trống")
+
+    logger.info(
+        "[/article/assist] action=%s title=%s",
+        req.action, (req.title or "")[:60]
+    )
+    try:
+        result = await article_agent.assist(
+            action=req.action,
+            title=req.title or "",
+            excerpt=req.excerpt or "",
+            content=req.content or "",
+            category_name=req.category_name or "",
+            tags=req.tags or [],
+        )
+        return ArticleAssistResponse(**result)
+    except Exception as e:
+        logger.error("[/article/assist] Error: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
+
+
+@app.post("/article/ask", response_model=ArticleAskResponse)
+async def article_ask(req: ArticleAskRequest):
+    """
+    Trả lời câu hỏi của người đọc về nội dung bài viết sức khỏe.
+    Được gọi khi user click 'Hỏi AI' trên trang chi tiết bài viết.
+    """
+    if not req.question or not req.question.strip():
+        raise HTTPException(status_code=400, detail="question không được để trống")
+    if len(req.question) > 500:
+        raise HTTPException(status_code=400, detail="Câu hỏi quá dài (tối đa 500 ký tự)")
+
+    logger.info(
+        "[/article/ask] question=%s title=%s",
+        req.question[:80], (req.title or "")[:60]
+    )
+    try:
+        result = await article_agent.ask(
+            question=req.question,
+            title=req.title or "",
+            excerpt=req.excerpt or "",
+            content=req.content or "",
+            category_name=req.category_name or "",
+            tags=req.tags or [],
+        )
+        return ArticleAskResponse(**result)
+    except Exception as e:
+        logger.error("[/article/ask] Error: %s", str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
 
 
