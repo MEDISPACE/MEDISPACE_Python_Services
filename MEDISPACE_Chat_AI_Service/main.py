@@ -2,6 +2,12 @@
 MEDISPACE_Chat_AI_Service — main.py
 FastAPI entry point cho AI Pharmacy Assistant.
 Port: 8003
+
+Phase 1 (2026-05):
+- Intent-aware routing: 11 intents
+- Context window management
+- Dynamic temperature per intent
+- Refined guardrails (giảm false positive)
 """
 import os
 import logging
@@ -16,6 +22,7 @@ from dotenv import load_dotenv
 
 from src.agents.pharmacy_agent import PharmacyAgent
 from src.agents.article_agent import article_agent
+from src.rag.typesense_client import check_typesense_health
 
 load_dotenv()
 
@@ -38,8 +45,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Medispace Chat AI Service",
-    description="AI Pharmacy Assistant using Gemma — fallback khi dược sĩ offline",
-    version="1.1.0",
+    description="AI Pharmacy Assistant using Gemma — Phase 2/3: Intent-aware RAG + Typesense + Article AI",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -59,13 +66,18 @@ class ChatRequest(BaseModel):
     user_id: str
     history: Optional[List[dict]] = None
     context_products: Optional[List[dict]] = None
+    context_data: Optional[dict] = None        # Phase 3: real user data (orders, loyalty)
 
 
 class ChatResponse(BaseModel):
     reply: str
-    classification: str         # "emergency" | "prescription_request" | "general"
+    classification: str         # "emergency" | "mental_health_crisis" | "prescription_request"
+                                # | "order_tracking" | "loyalty_inquiry" | "coupon_inquiry"
+                                # | "return_request" | "prescription_status" | "product_search"
+                                # | "general"
     is_escalated: bool          # True nếu nên chuyển cho dược sĩ thật
-    products_suggested: list    # Sản phẩm RAG gợi ý (Phase 2)
+    products_suggested: list    # Sản phẩm RAG gợi ý
+    suggested_questions: list   # Câu hỏi gợi ý tiếp theo từ AI
 
 
 # ─── Article AI Models ────────────────────────────────────────────────────────
@@ -102,14 +114,28 @@ class ArticleAskResponse(BaseModel):
 # ─── Health ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health():
+async def health():
+    ts_status = await check_typesense_health()
     return {
-        "status": "ok",
-        "service": "medispace-chat-ai",
-        "version": "1.1.0",
-        "model": os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf"),
-        "llm_url": os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space"),
+        "status":   "ok",
+        "service":  "medispace-chat-ai",
+        "version":  "1.3.0",
+        "model":    os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf"),
+        "llm_url":  os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space"),
+        "phase":    "Phase 3 — Context Enrichment (orders, loyalty)",
         "endpoints": ["/chat", "/chat/stream", "/article/assist", "/article/ask"],
+        "rag": {
+            "typesense_available": ts_status["available"],
+            "typesense_url":       os.getenv("TYPESENSE_URL", ""),
+            "collection":          os.getenv("TYPESENSE_PRODUCTS_COLLECTION", "products"),
+            **({"reason": ts_status["reason"]} if not ts_status["available"] else {}),
+        },
+        "intents_supported": [
+            "general", "product_search", "order_tracking",
+            "loyalty_inquiry", "coupon_inquiry", "return_request",
+            "prescription_status", "prescription_request",
+            "emergency", "mental_health_crisis", "too_long",
+        ],
     }
 
 
@@ -125,6 +151,7 @@ async def chat(req: ChatRequest):
             conversation_id=req.conversation_id,
             history=req.history,
             context_products=req.context_products,
+            context_data=req.context_data,
         )
         logger.info("[/chat] classification=%s escalated=%s", result["classification"], result["is_escalated"])
         return ChatResponse(**result)
@@ -144,6 +171,7 @@ async def chat_stream(req: ChatRequest):
                 conversation_id=req.conversation_id,
                 history=req.history,
                 context_products=req.context_products,
+                context_data=req.context_data,
             ),
             media_type="text/event-stream"
         )

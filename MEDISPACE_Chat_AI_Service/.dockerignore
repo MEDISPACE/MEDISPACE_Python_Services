@@ -7,3 +7,7 @@ __pycache__/
 .vscode/
 logs/
 .pytest_cache/
+# Tests không cần trong Docker image
+tests/
+pytest.ini
+test_*.py
