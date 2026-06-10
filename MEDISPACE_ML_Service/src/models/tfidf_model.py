@@ -343,6 +343,13 @@ class TFIDFRecommender:
         for pid in prescription_product_ids:
             candidate_scores.pop(pid, None)
 
+        # Automatic pharmacist suggestions remain OTC-only. Prescription items
+        # must be selected explicitly and independently reviewed.
+        if self.products_df is not None:
+            for _, product in self.products_df.iterrows():
+                if bool(product.get("requiresPrescription", False)):
+                    candidate_scores.pop(str(product["_id"]), None)
+
         # Sort và return top-N
         sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
         return [pid for pid, _ in sorted_candidates[:limit]]
