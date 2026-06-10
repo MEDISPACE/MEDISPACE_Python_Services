@@ -133,8 +133,13 @@ class TFIDFRecommender:
             print(f"[TF-IDF] Could not load from disk: {e}")
             return False
 
-    async def get_related(self, product_id: str, limit: int = 8,
-                           exclude_prescription_mismatch: bool = True) -> List[str]:
+    async def get_related(
+        self,
+        product_id: str,
+        limit: int = 8,
+        exclude_prescription_mismatch: bool = True,
+        exclude_prescription: bool = True
+    ) -> List[str]:
         """Tra ve danh sach productId lien quan nhat"""
         if not self.is_trained or self.tfidf_matrix is None:
             return []
@@ -156,6 +161,14 @@ class TFIDFRecommender:
                 if oos_idx is not None:
                     sim_scores[oos_idx] = 0
 
+            if exclude_prescription:
+                prescription_mask = self.products_df["requiresPrescription"].fillna(False).astype(bool)
+                prescription_ids = self.products_df[prescription_mask]["_id"].tolist()
+                for prescription_id in prescription_ids:
+                    prescription_idx = self.product_index.get(prescription_id)
+                    if prescription_idx is not None:
+                        sim_scores[prescription_idx] = 0
+
             # Filter: uu tien cung requiresPrescription flag
             if exclude_prescription_mismatch and self.products_df is not None:
                 current_rx = self.products_df.iloc[idx]["requiresPrescription"]
@@ -175,7 +188,8 @@ class TFIDFRecommender:
         limit: int = 8,
         lambda_mmr: float = 0.7,
         candidate_pool: int = 30,
-        exclude_prescription_mismatch: bool = True
+        exclude_prescription_mismatch: bool = True,
+        exclude_prescription: bool = True
     ) -> List[str]:
         """
         Sản phẩm liên quan với diversity via Maximal Marginal Relevance (MMR).
@@ -199,7 +213,8 @@ class TFIDFRecommender:
         candidates = await self.get_related(
             product_id,
             limit=candidate_pool,
-            exclude_prescription_mismatch=exclude_prescription_mismatch
+            exclude_prescription_mismatch=exclude_prescription_mismatch,
+            exclude_prescription=exclude_prescription
         )
         if not candidates:
             return []
@@ -272,7 +287,12 @@ class TFIDFRecommender:
 
         # 1. Lấy related products từ các sản phẩm trong đơn thuốc
         for pid in prescription_product_ids:
-            related = await self.get_related(pid, limit=20, exclude_prescription_mismatch=False)
+            related = await self.get_related(
+                pid,
+                limit=20,
+                exclude_prescription_mismatch=False,
+                exclude_prescription=False
+            )
             for r_pid in related:
                 p_idx = self.product_index.get(pid)
                 r_idx = self.product_index.get(r_pid)
@@ -286,7 +306,7 @@ class TFIDFRecommender:
         if chronic_diseases and self.feature_texts:
             for disease in chronic_diseases:
                 disease_lower = disease.lower().strip()
-                if not disease_lower:
+                if len(disease_lower) < 3:
                     continue
                 for idx, text in enumerate(self.feature_texts):
                     pid = self.index_product.get(idx)
@@ -298,7 +318,7 @@ class TFIDFRecommender:
             allergy_blocked = set()
             for allergy in allergies:
                 allergy_lower = allergy.lower().strip()
-                if not allergy_lower:
+                if len(allergy_lower) < 3:
                     continue
                 for idx, text in enumerate(self.feature_texts):
                     pid = self.index_product.get(idx)
@@ -307,7 +327,19 @@ class TFIDFRecommender:
             for pid in allergy_blocked:
                 candidate_scores.pop(pid, None)
 
-        # 4. Loại bỏ sản phẩm đã có trong đơn thuốc
+        # 4. Loại sản phẩm trùng với thuốc bệnh nhân đang sử dụng.
+        # Đây chỉ là guardrail từ khóa, không thay thế drug-interaction checker.
+        if current_medications and self.feature_texts:
+            for medication in current_medications:
+                medication_lower = medication.lower().strip()
+                if len(medication_lower) < 3:
+                    continue
+                for idx, text in enumerate(self.feature_texts):
+                    pid = self.index_product.get(idx)
+                    if pid and medication_lower in text.lower():
+                        candidate_scores.pop(pid, None)
+
+        # 5. Loại bỏ sản phẩm đã có trong đơn thuốc
         for pid in prescription_product_ids:
             candidate_scores.pop(pid, None)
 

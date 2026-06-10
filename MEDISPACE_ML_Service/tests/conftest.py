@@ -41,7 +41,7 @@ def sample_products() -> List[Dict]:
     return [
         make_product("p1", "Paracetamol 500mg", ingredients="Paracetamol", indications="hạ sốt giảm đau", category_id="cat1"),
         make_product("p2", "Ibuprofen 400mg", ingredients="Ibuprofen", indications="chống viêm giảm đau", category_id="cat1"),
-        make_product("p3", "Amoxicillin 500mg", ingredients="Amoxicillin", indications="kháng sinh viêm họng", category_id="cat2"),
+        make_product("p3", "Amoxicillin 500mg", ingredients="Amoxicillin", indications="kháng sinh viêm họng", category_id="cat2", requires_rx=True),
         make_product("p4", "Vitamin C 1000mg", ingredients="Ascorbic acid", indications="tăng đề kháng", category_id="cat3"),
         make_product("p5", "Cetirizine 10mg", ingredients="Cetirizine", indications="dị ứng mũi viêm mũi", category_id="cat1"),
         make_product("p6", "OOS Product", stock=0, category_id="cat1"),  # out of stock

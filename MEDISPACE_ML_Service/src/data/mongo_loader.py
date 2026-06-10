@@ -84,12 +84,12 @@ class MongoLoader:
         return products
 
     def load_orders(self, days: int = 365) -> List[Dict]:
-        """Load orders trong N ngày gần nhất (loại bỏ cancelled)"""
+        """Load completed purchases in the last N days."""
         since = datetime.now() - timedelta(days=days)
         orders = list(self.db["orders"].find(
             {
                 "createdAt": {"$gte": since},
-                "orderStatus": {"$nin": ["cancelled"]}
+                "orderStatus": "delivered"
             },
             {"_id": 1, "userId": 1, "items": 1, "createdAt": 1, "totalAmount": 1}
         ))
@@ -126,15 +126,30 @@ class MongoLoader:
         print(f"[MongoLoader] Loaded {len(users)} users with wishlists")
         return users
 
+    def load_recommendation_events(self, days: int = 90) -> List[Dict]:
+        """Load authenticated recommendation clicks as a weak implicit signal."""
+        since = datetime.now() - timedelta(days=days)
+        events = list(self.db["recommendationEvents"].find(
+            {
+                "userId": {"$ne": None},
+                "eventType": "click",
+                "timestamp": {"$gte": since}
+            },
+            {"userId": 1, "productId": 1, "timestamp": 1}
+        ))
+        print(f"[MongoLoader] Loaded {len(events)} recommendation click events")
+        return events
+
     def build_interaction_matrix(self) -> pd.DataFrame:
         """
         Xây dựng User-Item interaction matrix cho SVD/NMF.
 
         Signal weights (cao hơn = stronger intent):
           - Purchase : 5.0 × recency_decay  (confirmed intent)
-          - Review   : 0–4.0 × recency_decay (explicit feedback)
+          - Review   : 0–4.0 × recency_decay (1–2 stars are not positive signals)
           - Wishlist : 2.0                   (explicit save, no decay — still relevant)
           - Cart     : 1.0                   (weak implicit — user may abandon)
+          - Rec click: 0.5                   (weakest signal)
         """
         interactions: Dict[tuple, float] = {}
         now = datetime.now()
@@ -153,7 +168,8 @@ class MongoLoader:
                 if not product_id:
                     continue
                 key = (user_id, product_id)
-                interactions[key] = max(interactions.get(key, 0), 5.0 * recency_factor)
+                quantity = max(float(item.get("quantity", 1)), 1.0)
+                interactions[key] = interactions.get(key, 0) + 5.0 * recency_factor * min(quantity, 5.0)
 
         # ── 2. Review (weight = rating/5 × 4 × recency) ─────────────────────
         reviews = self.load_reviews()
@@ -165,9 +181,10 @@ class MongoLoader:
             rating = review.get("rating", 3)
             days_ago = (now - review.get("createdAt", now)).days
             recency_factor = np.exp(-0.005 * days_ago)
-            weight = (rating / 5.0) * 4.0 * recency_factor
+            weight = max((rating - 2.0) / 3.0, 0.0) * 4.0 * recency_factor
             key = (user_id, product_id)
-            interactions[key] = max(interactions.get(key, 0), weight)
+            if weight > 0:
+                interactions[key] = max(interactions.get(key, 0), weight)
 
         # ── 3. Wishlist (weight = 2.0) ────────────────────────────────────────
         wishlists = self.load_wishlists()
@@ -194,6 +211,18 @@ class MongoLoader:
                 key = (user_id, product_id)
                 if key not in interactions:
                     interactions[key] = 1.0
+
+        # ── 5. Recommendation click (weight = 0.5 × recency) ─────────────────
+        for event in self.load_recommendation_events():
+            user_id = str(event.get("userId", ""))
+            product_id = str(event.get("productId", ""))
+            if not user_id or not product_id:
+                continue
+            days_ago = (now - event.get("timestamp", now)).days
+            recency_factor = np.exp(-0.01 * days_ago)
+            key = (user_id, product_id)
+            if key not in interactions:
+                interactions[key] = 0.5 * recency_factor
 
         # ── Build DataFrame ───────────────────────────────────────────────────
         if not interactions:
@@ -225,7 +254,7 @@ class MongoLoader:
     def get_user_order_count(self) -> Dict[str, int]:
         """Đếm số orders per user (để quyết định SVD vs fallback)"""
         pipeline = [
-            {"$match": {"orderStatus": {"$nin": ["cancelled"]}}},
+            {"$match": {"orderStatus": "delivered"}},
             {"$group": {"_id": "$userId", "count": {"$sum": 1}}}
         ]
         result = list(self.db["orders"].aggregate(pipeline))
@@ -251,7 +280,7 @@ class MongoLoader:
             return []
 
         pipeline = [
-            {"$match": {"userId": uid}},
+            {"$match": {"userId": uid, "orderStatus": "delivered"}},
             {"$unwind": "$items"},
             {
                 "$lookup": {

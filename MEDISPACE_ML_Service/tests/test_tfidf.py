@@ -58,6 +58,11 @@ class TestGetRelated:
         assert "p6" not in results, "Out-of-stock product should be excluded"
 
     @pytest.mark.asyncio
+    async def test_excludes_prescription_products_by_default(self, model):
+        results = await model.get_related("p1", limit=10)
+        assert "p3" not in results, "Prescription product should not appear in customer recommendations"
+
+    @pytest.mark.asyncio
     async def test_related_pain_relief_products(self, model):
         """p1 (Paracetamol) và p2 (Ibuprofen) đều là thuốc giảm đau → phải gần nhau"""
         results = await model.get_related("p1", limit=5)
@@ -167,6 +172,17 @@ class TestGetPharmacistSuggestions:
         )
         # p7 nên xuất hiện trong kết quả khi có boost
         assert "p7" in results, "Heart-related product should be boosted for heart disease patient"
+
+    @pytest.mark.asyncio
+    async def test_current_medication_excludes_matching_product(self, model):
+        results = await model.get_pharmacist_suggestions(
+            chronic_diseases=["tim mạch"],
+            allergies=[],
+            current_medications=["Aspirin"],
+            prescription_product_ids=["p1"],
+            limit=10
+        )
+        assert "p7" not in results
 
     @pytest.mark.asyncio
     async def test_not_trained_returns_empty(self):
