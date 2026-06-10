@@ -72,13 +72,14 @@ class NMFTrendingRecommender:
                 'category_id': str(p.get('categoryId', '')),
                 'rating': float(p.get('rating', 0)),
                 'stock': int(p.get('stockQuantity', 0)),
+                'requires_rx': bool(p.get('requiresPrescription', False)),
             } for p in products])
 
             merged = scores_df.merge(product_meta, on='product_id', how='right')
             merged['nmf_score'] = merged['nmf_score'].fillna(0)
 
-            # Filter: chi lay products con hang
-            merged = merged[merged['stock'] > 0]
+            # Customer-facing trending only contains in-stock OTC products.
+            merged = merged[(merged['stock'] > 0) & (~merged['requires_rx'])]
 
             # Final score = NMF score + rating bonus
             merged['final_score'] = (
@@ -102,7 +103,7 @@ class NMFTrendingRecommender:
         rows = []
         for p in products:
             stock = int(p.get('stockQuantity', 0))
-            if stock <= 0:
+            if stock <= 0 or bool(p.get('requiresPrescription', False)):
                 continue
             rows.append({
                 'product_id': str(p['_id']),
@@ -151,8 +152,8 @@ class NMFTrendingRecommender:
         if not self.is_trained:
             return []
 
-        if category_id and category_id in self.category_trending:
-            return self.category_trending[category_id][:limit]
+        if category_id:
+            return self.category_trending.get(category_id, [])[:limit]
 
         return self.global_trending[:limit]
 

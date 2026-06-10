@@ -32,6 +32,7 @@ def make_products():
         {"_id": "p3", "categoryId": "cat2", "isActive": True, "stockQuantity": 60,  "rating": 4.2, "reviewCount": 20},
         {"_id": "p4", "categoryId": "cat1", "isActive": True, "stockQuantity": 0,   "rating": 3.5, "reviewCount": 10},  # OOS
         {"_id": "p5", "categoryId": "cat2", "isActive": True, "stockQuantity": 40,  "rating": 3.8, "reviewCount": 15},
+        {"_id": "p6", "categoryId": "cat2", "isActive": True, "stockQuantity": 40,  "rating": 5.0, "reviewCount": 100, "requiresPrescription": True},
     ]
 
 
@@ -70,6 +71,11 @@ class TestGetTrending:
         assert "p4" not in results, "OOS product should not appear in trending"
 
     @pytest.mark.asyncio
+    async def test_excludes_prescription_products(self, trained_nmf):
+        results = await trained_nmf.get_trending(limit=10)
+        assert "p6" not in results, "Prescription product should not appear in customer trending"
+
+    @pytest.mark.asyncio
     async def test_limit_respected(self, trained_nmf):
         results = await trained_nmf.get_trending(limit=2)
         assert len(results) <= 2
@@ -82,6 +88,11 @@ class TestGetTrending:
             product = next((p for p in make_products() if p["_id"] == pid), None)
             if product:
                 assert product["categoryId"] == "cat1"
+
+    @pytest.mark.asyncio
+    async def test_unknown_category_does_not_fall_back_to_global(self, trained_nmf):
+        results = await trained_nmf.get_trending(category_id="unknown", limit=10)
+        assert results == []
 
     @pytest.mark.asyncio
     async def test_not_trained_returns_empty(self):

@@ -2,6 +2,7 @@
 hybrid_engine.py - Dieu phoi logic giua cac ML models va fallback chain
 """
 import os
+import asyncio
 from typing import List, Tuple, Dict
 from src.data.mongo_loader import mongo_loader, runtime_loader
 from src.models.tfidf_model import TFIDFRecommender
@@ -24,6 +25,10 @@ class HybridEngine:
         self.svd = svd
 
     async def train_all(self) -> None:
+        """Train models off the FastAPI event loop."""
+        await asyncio.to_thread(self._train_all_sync)
+
+    def _train_all_sync(self) -> None:
         """Train tat ca models theo thu tu. Goi khi khoi dong va retraining."""
         print("\n[HybridEngine] === START TRAINING ALL MODELS ===")
         mongo_loader.connect()
@@ -33,19 +38,34 @@ class HybridEngine:
             products = mongo_loader.load_products()
             baskets = mongo_loader.build_transaction_baskets()
             interaction_df = mongo_loader.build_interaction_matrix()
+            otc_products = [
+                product for product in products
+                if not bool(product.get("requiresPrescription", False))
+            ]
+            otc_product_ids = {str(product["_id"]) for product in otc_products}
+            otc_baskets = [
+                [product_id for product_id in basket if product_id in otc_product_ids]
+                for basket in baskets
+            ]
+            otc_baskets = [basket for basket in otc_baskets if len(basket) >= 2]
+            otc_interaction_df = interaction_df
+            if not interaction_df.empty:
+                otc_interaction_df = interaction_df[
+                    interaction_df["product_id"].isin(otc_product_ids)
+                ]
 
-            # 2. TF-IDF (luon train duoc)
+            # TF-IDF keeps all products for pharmacist queries; customer models are OTC-only.
             self.tfidf.train(products)
 
             # 3. FP-Growth (can du baskets)
-            self.fpgrowth.train(baskets)
+            self.fpgrowth.train(otc_baskets)
 
             # 4. NMF Trending (train tren interaction hoac fallback)
-            self.nmf.train(interaction_df, products)
+            self.nmf.train(otc_interaction_df, otc_products)
 
             # 5. SVD (chi train khi du users)
-            if not interaction_df.empty:
-                self.svd.train(interaction_df)
+            if not otc_interaction_df.empty:
+                self.svd.train(otc_interaction_df)
             else:
                 print("[SVD] No interaction data. Skipping.")
 
@@ -79,7 +99,7 @@ class HybridEngine:
 
         # Try NMF filtered by user's top categories
         # Sử dụng runtime_loader (persistent connection) — mongo_loader đã disconnect sau train_all()
-        top_categories = runtime_loader.get_user_top_categories(user_id)
+        top_categories = await asyncio.to_thread(runtime_loader.get_user_top_categories, user_id)
         if top_categories:
             results = await self.nmf.get_filtered_by_categories(top_categories, limit)
             if results:
@@ -144,11 +164,14 @@ class HybridEngine:
             return []
 
         try:
-            # Lấy tất cả orders của user (không filter cancelled)
-            orders = list(db["orders"].find(
-                {"userId": uid, "orderStatus": {"$nin": ["cancelled"]}},
-                {"items": 1, "createdAt": 1}
-            ).sort("createdAt", 1))
+            # Chỉ dùng giao dịch đã giao thành công; ngày nhận hàng mới bắt đầu chu kỳ sử dụng.
+            def _load_orders():
+                return list(db["orders"].find(
+                    {"userId": uid, "orderStatus": "delivered"},
+                    {"items": 1, "deliveredAt": 1, "createdAt": 1}
+                ).sort("deliveredAt", 1))
+
+            orders = await asyncio.to_thread(_load_orders)
 
             if len(orders) < 2:
                 return []
@@ -156,8 +179,8 @@ class HybridEngine:
             # Tính purchase timeline per product
             purchase_timeline: Dict[str, List[datetime]] = {}
             for order in orders:
-                created_at = order.get("createdAt")
-                if not created_at:
+                purchase_at = order.get("deliveredAt") or order.get("createdAt")
+                if not purchase_at:
                     continue
                 for item in order.get("items", []):
                     pid = str(item.get("productId", ""))
@@ -165,7 +188,7 @@ class HybridEngine:
                         continue
                     if pid not in purchase_timeline:
                         purchase_timeline[pid] = []
-                    purchase_timeline[pid].append(created_at)
+                    purchase_timeline[pid].append(purchase_at)
 
             # Tìm sản phẩm đến hạn mua lại
             now = datetime.now()
@@ -194,7 +217,31 @@ class HybridEngine:
 
             # Sort theo mức độ "quá hạn" — sản phẩm cần nhất lên đầu
             due_products.sort(key=lambda x: x[1], reverse=True)
-            return [pid for pid, _ in due_products[:limit]]
+            due_product_ids = [pid for pid, _ in due_products]
+
+            def _load_eligible_product_ids():
+                object_ids = []
+                for product_id in due_product_ids:
+                    try:
+                        object_ids.append(ObjectId(product_id))
+                    except Exception:
+                        continue
+                products = db["products"].find(
+                    {
+                        "_id": {"$in": object_ids},
+                        "isActive": True,
+                        "stockQuantity": {"$gt": 0},
+                        "requiresPrescription": {"$ne": True}
+                    },
+                    {"_id": 1}
+                )
+                return {str(product["_id"]) for product in products}
+
+            eligible_product_ids = await asyncio.to_thread(_load_eligible_product_ids)
+            return [
+                product_id for product_id in due_product_ids
+                if product_id in eligible_product_ids
+            ][:limit]
 
         except Exception as e:
             print(f"[HybridEngine] get_replenishment error: {e}")
