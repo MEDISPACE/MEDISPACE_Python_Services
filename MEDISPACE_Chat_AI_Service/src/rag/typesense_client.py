@@ -69,10 +69,19 @@ def _extract_search_query(message: str, intent: str) -> str:
     query = message.strip()[:150]
 
     # Loại bỏ các từ phổ thông không có giá trị search
+    # NGUYÊN TẮC: Chỉ loại particle tiếng Việt (thán từ, trợ từ thuần túy).
+    # KHÔNG loại các danh từ có nghĩa như "thuốc", "bệnh", "đau"...
     stop_words = [
+        # Đại từ nhân xưng / trợ từ
         "tôi", "bị", "có", "thể", "được", "không", "nên", "cần", "muốn",
+        # Thán từ / cảm thán
         "hỏi", "cho", "xin", "ơi", "à", "nhé", "vậy", "ạ", "dạ",
-        "medispace", "thuốc", "gì", "nào", "sao",
+        # Tên brand (không cần search)
+        "medispace",
+        # Từ hỏi quá chung chung
+        "gì", "nào",
+        # ĐÃ BỎ: "thuốc" (từ khóa cốt lõi ngành dược — KHÔNG lọc)
+        # ĐÃ BỎ: "sao" (có thể là "đau sao lưng", không lọc)
     ]
     words = query.split()
     filtered = [w for w in words if w.lower() not in stop_words]

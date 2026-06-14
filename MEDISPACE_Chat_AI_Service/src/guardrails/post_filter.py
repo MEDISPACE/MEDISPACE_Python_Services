@@ -1,10 +1,44 @@
 import re
 
 # ──────────────────────────────────────────────────────────────────────────────
+# WHITELIST — Câu trả lời chứa các cụm này KHÔNG bị block dù match DANGEROUS
+#
+# Nguyên tắc: Thông tin liều chung từ nhà sản xuất / WHO / BYT là an toàn.
+# Chỉ block khi AI đưa ra lời khuyên CÁ NHÂN HOÁ ("bạn nên uống X mg").
+# ──────────────────────────────────────────────────────────────────────────────
+
+DANGEROUS_WHITELIST = [
+    # Dẫn chiếu nguồn y tế uy tín / tờ hướng dẫn sản phẩm
+    r'theo khuyến cáo',
+    r'theo hướng dẫn sử dụng',
+    r'tờ hướng dẫn',
+    r'nhà sản xuất khuyến cáo',
+    r'liều khuyến cáo',
+    r'liều an toàn',
+    r'liều thông thường',
+    r'theo chỉ định của bác sĩ',
+    r'theo đơn bác sĩ',
+    r'WHO khuyến cáo',
+    r'Bộ Y tế',
+    r'theo nghiên cứu',
+    r'thường được kê',
+    r'liều dùng ghi trên',
+    r'bạn đọc kỹ',
+    r'đọc kỹ hướng dẫn',
+    r'hỏi dược sĩ',
+    r'hỏi bác sĩ',
+    # Mô tả sản phẩm (thông tin trên bao bì)
+    r'mỗi viên chứa',
+    r'hàm lượng',
+    r'nồng độ',
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
 # DANGEROUS PATTERNS — Phát hiện output nguy hiểm từ AI
 #
-# NGUYÊN TẮC: Chỉ block khi AI đưa ra liều lượng CỤ THỂ cho người dùng,
-# KHÔNG block khi mô tả thông tin thuốc chung hoặc hướng dẫn sản phẩm.
+# NGUYÊN TẮC: Chỉ block khi AI đưa ra liều lượng CỤ THỂ CÁ NHÂN HOÁ,
+# KHÔNG block khi mô tả thông tin thuốc chung / hướng dẫn sản phẩm / tài liệu.
+# Whitelist (trên) được kiểm tra trước — nếu match whitelist → KHÔNG block.
 # ──────────────────────────────────────────────────────────────────────────────
 
 DANGEROUS_PATTERNS = [
@@ -77,16 +111,31 @@ def sanitize_response(ai_response: str) -> tuple[str, bool]:
         (cleaned_response, was_blocked)
         - was_blocked=True: Phát hiện nội dung nguy hiểm, đã thay bằng fallback
         - was_blocked=False: Phản hồi hợp lệ (có thể đã clean markdown/brand)
+
+    Quy trình:
+        1. Kiểm tra whitelist — nếu có cụm từ an toàn → bỏ qua dangerous check
+        2. Kiểm tra dangerous patterns
+        3. Làm sạch markdown
+        4. Sửa tên thương hiệu
     """
-    # 1. Kiểm tra nội dung nguy hiểm
-    for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, ai_response, re.IGNORECASE):
-            fallback = (
-                "Tôi không thể tư vấn chi tiết về liều lượng sử dụng cụ thể cho từng trường hợp. "
-                "Vui lòng đọc kỹ tờ hướng dẫn sử dụng đi kèm sản phẩm hoặc kết nối với Dược sĩ "
-                "của Medispace để được hướng dẫn an toàn và chính xác nhất."
-            )
-            return fallback, True
+    # 1. Kiểm tra whitelist trước — câu trả lời có dẫn chiếu nguồn uy tín
+    #    hoặc nhắc đọc hướng dẫn sử dụng → không phải cá nhân hoá → KHÔNG block
+    response_lower = ai_response.lower()
+    has_whitelist = any(
+        re.search(wp, response_lower, re.IGNORECASE)
+        for wp in DANGEROUS_WHITELIST
+    )
+
+    # 2. Kiểm tra nội dung nguy hiểm (chỉ khi không có whitelist)
+    if not has_whitelist:
+        for pattern in DANGEROUS_PATTERNS:
+            if re.search(pattern, ai_response, re.IGNORECASE):
+                fallback = (
+                    "Tôi không thể tư vấn chi tiết về liều lượng sử dụng cụ thể cho từng trường hợp. "
+                    "Vui lòng đọc kỹ tờ hướng dẫn sử dụng đi kèm sản phẩm hoặc kết nối với Dược sĩ "
+                    "của Medispace để được hướng dẫn an toàn và chính xác nhất."
+                )
+                return fallback, True
 
     # 2. Làm sạch markdown
     clean_text = _clean_markdown(ai_response)

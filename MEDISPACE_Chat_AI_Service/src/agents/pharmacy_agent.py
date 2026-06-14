@@ -8,12 +8,22 @@ Phase 1 Improvements:
 - [B3] Dynamic temperature theo intent
 - Few-shot examples mở rộng: 3 → 8+ examples
 - Prompt templates chuyên biệt cho từng intent nhóm
+
+Fix Log:
+- [FIX-1] is_escalated: dùng intent-based logic thay vì was_sanitized
+- [FIX-4] LLM retry: thêm exponential backoff 2 lần khi timeout
+- [FIX-5] [GỢI Ý] parser: mở rộng pattern match nhiều dạng
+- [FIX-6] System prompt: thêm ngày hiện tại
+- [FIX-7] History: MAX_HISTORY_TURNS=6 đồng bộ với BE (6 messages)
+- [FIX-8] RAG articles: mở rộng cho return_request và coupon_inquiry
 """
 import os
 import json
 import httpx
+import asyncio
 import logging
 import re
+from datetime import datetime
 from src.guardrails.pre_filter import (
     classify_message,
     EMERGENCY_RESPONSE,
@@ -29,9 +39,11 @@ logger = logging.getLogger("chat_ai.agent")
 LLM_BASE  = os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space").rstrip("/")
 LLM_MODEL = os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf")
 LLM_MAX_TOKENS = int(os.getenv("CUSTOM_LLM_MAX_TOKENS", "1536"))
+LLM_MAX_RETRIES = int(os.getenv("CUSTOM_LLM_MAX_RETRIES", "2"))  # [FIX-4]
 
 # ── Context window limits ─────────────────────────────────────────────────────
-MAX_HISTORY_TURNS = 10      # Tối đa 10 lượt hội thoại (user+assistant mỗi lượt)
+# [FIX-7] Đồng bộ với BE: BE giới hạn limit(6) messages khi gửi history
+MAX_HISTORY_TURNS = 6      # Tối đa 6 lượt hội thoại (user+assistant mỗi lượt)
 MAX_HISTORY_CHARS = 3000    # Tối đa 3000 ký tự trong history
 
 # ── RAG config ────────────────────────────────────────────────────────
@@ -58,7 +70,11 @@ INTENT_TEMPERATURE: dict[str, float] = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Shared header (dùng trong mọi prompt) ─────────────────────────────────────
-_HEADER = """Bạn là Trợ lý Ảo AI của Medispace — nền tảng dược phẩm trực tuyến hàng đầu Việt Nam.
+# [FIX-6] Inject ngày hiện tại để AI trả lời đúng về thời gian, hạn coupon...
+def _build_header() -> str:
+    today = datetime.now().strftime("%d/%m/%Y")
+    return f"""Bạn là Trợ lý Ảo AI của Medispace — nền tảng dược phẩm trực tuyến hàng đầu Việt Nam.
+Ngày hôm nay: {today}.
 
 QUY TẮC CHUNG (bắt buộc với MỌI phản hồi):
 1. Trả lời bằng tiếng Việt, thân thiện, lịch sự, ngắn gọn (tối đa 200 từ).
@@ -66,6 +82,8 @@ QUY TẮC CHUNG (bắt buộc với MỌI phản hồi):
 3. Tên thương hiệu LUÔN viết đầy đủ là "Medispace", không viết tắt.
 4. Cuối mỗi phản hồi LUÔN thêm 2-3 câu hỏi gợi ý: [GỢI Ý]: Câu 1 | Câu 2
 """
+
+_HEADER = _build_header()
 
 # ── [GENERAL + PRODUCT_SEARCH] Tư vấn sức khỏe & sản phẩm ───────────────────
 GENERAL_PROMPT_TEMPLATE = _HEADER + """
@@ -548,11 +566,25 @@ class PharmacyAgent:
         safe_reply, was_sanitized = sanitize_response(raw_reply)
         logger.info("[PharmacyAgent] Sanitized: %s", was_sanitized)
 
-        # Tách câu hỏi gợi ý
+        # [FIX-5] Tách câu hỏi gợi ý — mở rộng pattern để bắt nhiều dạng LLM viết
+        # LLM có thể viết: [GỢI Ý]:, [Gợi ý]:, Gợi ý:, [Câu hỏi gợi ý]:, [GỢI Ý]:
         suggested_questions = []
-        match = re.search(r'\[GỢI Ý\]:\s*(.*)', safe_reply, re.IGNORECASE)
+        match = re.search(
+            r'\[(GỢI Ý|Gợi ý|GỢI Ý|Câu hỏi gợi ý|Câu hỏi)\]:\s*(.*)',
+            safe_reply,
+            re.IGNORECASE,
+        )
+        if not match:
+            # Fallback: không có dấu ngoặc vuông
+            match = re.search(
+                r'(?:^|\n)Gợi ý[^:]*:\s*(.*)',
+                safe_reply,
+                re.IGNORECASE | re.MULTILINE,
+            )
         if match:
-            q_list = match.group(1).split('|')
+            # Lấy group cuối (nội dung câu hỏi)
+            q_raw = match.group(match.lastindex)
+            q_list = q_raw.split('|')
             suggested_questions = [q.strip() for q in q_list if q.strip()]
             safe_reply = safe_reply[:match.start()].strip()
 
@@ -685,8 +717,10 @@ class PharmacyAgent:
         )
 
         # 3. [Phase 2+] RAG enrichment — products + articles
+        # [FIX-8] Mở rộng thêm return_request và coupon_inquiry để AI có thêm
+        # kiến thức sức khỏe khi tư vấn đổi trả dị ứng / khuyến mãi dinh dưỡng
         rag_articles = []
-        if classification in ("general", "product_search"):
+        if classification in ("general", "product_search", "return_request", "coupon_inquiry"):
             rag_articles = await search_articles_for_rag(message, limit=2)
 
         rag_context = self._build_rag_context(enriched_products, articles=rag_articles)
@@ -695,39 +729,62 @@ class PharmacyAgent:
             context_data=context_data,
         )
 
-        # 4. Call LLM
+        # 4. Call LLM — [FIX-4] với retry exponential backoff
         temperature = self._get_llm_temperature(classification)
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                endpoint = f"{LLM_BASE}/v1/chat/completions"
-                payload  = {
-                    "model":       LLM_MODEL,
-                    "messages":    messages,
-                    "temperature": temperature,
-                    "max_tokens":  LLM_MAX_TOKENS,
-                    "stream":      False,
-                }
-                logger.info(
-                    "[PharmacyAgent] LLM call → intent=%s temp=%.2f rag=%s products=%d context_data=%s",
-                    classification, temperature, rag_source, len(enriched_products),
-                    bool(context_data),
-                )
-                resp = await client.post(endpoint, json=payload)
-                resp.raise_for_status()
-                data      = resp.json()
-                raw_reply = data["choices"][0]["message"]["content"]
-                logger.debug("[PharmacyAgent] Raw reply: %s", raw_reply[:200])
-        except Exception as e:
-            logger.error("[PharmacyAgent] LLM API Error: %s", str(e))
-            raise e
+        endpoint = f"{LLM_BASE}/v1/chat/completions"
+        payload  = {
+            "model":       LLM_MODEL,
+            "messages":    messages,
+            "temperature": temperature,
+            "max_tokens":  LLM_MAX_TOKENS,
+            "stream":      False,
+        }
+        logger.info(
+            "[PharmacyAgent] LLM call → intent=%s temp=%.2f rag=%s products=%d context_data=%s",
+            classification, temperature, rag_source, len(enriched_products),
+            bool(context_data),
+        )
+        raw_reply = ""
+        last_error: Exception | None = None
+        for attempt in range(LLM_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, json=payload)
+                    resp.raise_for_status()
+                    data      = resp.json()
+                    raw_reply = data["choices"][0]["message"]["content"]
+                    logger.debug("[PharmacyAgent] Raw reply: %s", raw_reply[:200])
+                    break  # Thành công → thoát retry loop
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_error = e
+                if attempt < LLM_MAX_RETRIES:
+                    wait_s = 1.5 * (attempt + 1)  # 1.5s, 3.0s
+                    logger.warning(
+                        "[PharmacyAgent] LLM timeout (attempt %d/%d), retry sau %.1fs...",
+                        attempt + 1, LLM_MAX_RETRIES + 1, wait_s
+                    )
+                    await asyncio.sleep(wait_s)
+                else:
+                    logger.error("[PharmacyAgent] LLM timeout sau %d lần thử: %s", LLM_MAX_RETRIES + 1, str(e))
+                    raise e
+            except Exception as e:
+                # Lỗi khác (HTTP 4xx/5xx) → raise ngay, không retry
+                logger.error("[PharmacyAgent] LLM API Error: %s", str(e))
+                raise e
 
         # 5. Post-process
         result = self._process_final_reply(raw_reply, enriched_products)
 
+        # [FIX-1] is_escalated dựa theo intent, KHÔNG phải was_sanitized
+        # was_sanitized=True chỉ nghĩa là reply bị thay fallback — không nhất thiết cần DS
+        # Các intent luôn escalate: emergency, mental_health_crisis, prescription_request
+        ESCALATE_INTENTS = {"emergency", "mental_health_crisis", "prescription_request"}
+        is_escalated = classification in ESCALATE_INTENTS
+
         return {
             "reply":               result["safe_reply"],
             "classification":      classification,
-            "is_escalated":        result["was_sanitized"],
+            "is_escalated":        is_escalated,
             "products_suggested":  result["products_suggested"],
             "suggested_questions": result["suggested_questions"],
         }
@@ -768,8 +825,9 @@ class PharmacyAgent:
 
 
         # 3. [Phase 2+] RAG enrichment — products + articles
+        # [FIX-8] Mở rộng thêm return_request và coupon_inquiry
         rag_articles = []
-        if classification in ("general", "product_search"):
+        if classification in ("general", "product_search", "return_request", "coupon_inquiry"):
             rag_articles = await search_articles_for_rag(message, limit=2)
 
         rag_context = self._build_rag_context(enriched_products, articles=rag_articles)
@@ -834,11 +892,14 @@ class PharmacyAgent:
         logger.info("[PharmacyAgent Stream] Sanitized: %s", result["was_sanitized"])
 
         # 6. Yield final metadata
+        # [FIX-1] is_escalated dựa theo intent (xem respond() để đồng nhất)
+        ESCALATE_INTENTS = {"emergency", "mental_health_crisis", "prescription_request"}
+        is_escalated_stream = classification in ESCALATE_INTENTS
         yield json.dumps({
             "type":               "done",
             "reply":              result["safe_reply"],
             "classification":     classification,
-            "is_escalated":       result["was_sanitized"],
+            "is_escalated":       is_escalated_stream,
             "products_suggested": result["products_suggested"],
             "suggested_questions": result["suggested_questions"],
         }, ensure_ascii=False) + "\n"
