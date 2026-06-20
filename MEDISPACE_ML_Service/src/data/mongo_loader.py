@@ -127,15 +127,15 @@ class MongoLoader:
         return users
 
     def load_recommendation_events(self, days: int = 90) -> List[Dict]:
-        """Load authenticated recommendation clicks as a weak implicit signal."""
+        """Load authenticated positive recommendation events as implicit signals."""
         since = datetime.now() - timedelta(days=days)
         events = list(self.db["recommendationEvents"].find(
             {
                 "userId": {"$ne": None},
-                "eventType": "click",
+                "eventType": {"$in": ["click", "add_to_cart", "purchase"]},
                 "timestamp": {"$gte": since}
             },
-            {"userId": 1, "productId": 1, "timestamp": 1}
+            {"userId": 1, "productId": 1, "eventType": 1, "timestamp": 1}
         ))
         print(f"[MongoLoader] Loaded {len(events)} recommendation click events")
         return events
@@ -212,7 +212,8 @@ class MongoLoader:
                 if key not in interactions:
                     interactions[key] = 1.0
 
-        # ── 5. Recommendation click (weight = 0.5 × recency) ─────────────────
+        # ── 5. Recommendation events (weighted by intent × recency) ─────────
+        event_weights = {"click": 0.5, "add_to_cart": 2.5, "purchase": 6.0}
         for event in self.load_recommendation_events():
             user_id = str(event.get("userId", ""))
             product_id = str(event.get("productId", ""))
@@ -221,8 +222,8 @@ class MongoLoader:
             days_ago = (now - event.get("timestamp", now)).days
             recency_factor = np.exp(-0.01 * days_ago)
             key = (user_id, product_id)
-            if key not in interactions:
-                interactions[key] = 0.5 * recency_factor
+            weight = event_weights.get(event.get("eventType"), 0.0) * recency_factor
+            interactions[key] = max(interactions.get(key, 0), weight)
 
         # ── Build DataFrame ───────────────────────────────────────────────────
         if not interactions:
@@ -302,6 +303,24 @@ class MongoLoader:
             print(f"[MongoLoader] get_user_top_categories error: {e}")
             return []
 
+    def get_user_feedback_exclusions(self, user_id: str, days: int = 90) -> Dict[str, set]:
+        """Return recently dismissed and snoozed products for serving-time filtering."""
+        from bson import ObjectId
+        try:
+            uid = ObjectId(user_id)
+        except Exception:
+            return {"dismissed": set(), "snoozed": set()}
+        since = datetime.now() - timedelta(days=days)
+        rows = self.db["recommendationEvents"].find(
+            {"userId": uid, "eventType": {"$in": ["dismiss", "snooze"]}, "timestamp": {"$gte": since}},
+            {"productId": 1, "eventType": 1},
+        )
+        result = {"dismissed": set(), "snoozed": set()}
+        for row in rows:
+            bucket = "snoozed" if row.get("eventType") == "snooze" else "dismissed"
+            result[bucket].add(str(row.get("productId")))
+        return result
+
 
 # ── Runtime loader: kết nối persistent cho query tại request time ─────────────
 class RuntimeMongoLoader:
@@ -322,6 +341,10 @@ class RuntimeMongoLoader:
     def get_user_top_categories(self, user_id: str, top_n: int = 3) -> List[str]:
         self._ensure_connected()
         return self._loader.get_user_top_categories(user_id, top_n)
+
+    def get_user_feedback_exclusions(self, user_id: str) -> Dict[str, set]:
+        self._ensure_connected()
+        return self._loader.get_user_feedback_exclusions(user_id)
 
 
 # Singleton runtime loader — dùng trong HybridEngine.get_personalized()

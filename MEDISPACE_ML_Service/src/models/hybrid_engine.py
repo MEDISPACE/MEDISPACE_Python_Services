@@ -3,6 +3,8 @@ hybrid_engine.py - Dieu phoi logic giua cac ML models va fallback chain
 """
 import os
 import asyncio
+import threading
+from datetime import datetime, timezone
 from typing import List, Tuple, Dict
 from src.data.mongo_loader import mongo_loader, runtime_loader
 from src.models.tfidf_model import TFIDFRecommender
@@ -23,6 +25,9 @@ class HybridEngine:
         self.fpgrowth = fpgrowth
         self.nmf = nmf
         self.svd = svd
+        self.model_version = "untrained"
+        self.last_evaluation: Dict[str, object] = {}
+        self._swap_lock = threading.Lock()
 
     async def train_all(self) -> None:
         """Train models off the FastAPI event loop."""
@@ -54,25 +59,53 @@ class HybridEngine:
                     interaction_df["product_id"].isin(otc_product_ids)
                 ]
 
-            # TF-IDF keeps all products for pharmacist queries; customer models are OTC-only.
-            self.tfidf.train(products)
+            candidate_tfidf = TFIDFRecommender()
+            candidate_fpgrowth = FPGrowthRecommender()
+            candidate_nmf = NMFTrendingRecommender()
+            candidate_svd = SVDRecommender()
+
+            # Train a shadow bundle. Serving models remain untouched until validation passes.
+            candidate_tfidf.train(products)
 
             # 3. FP-Growth (can du baskets)
-            self.fpgrowth.train(otc_baskets)
+            candidate_fpgrowth.train(otc_baskets)
 
             # 4. NMF Trending (train tren interaction hoac fallback)
-            self.nmf.train(otc_interaction_df, otc_products)
+            candidate_nmf.train(otc_interaction_df, otc_products)
 
             # 5. SVD (chi train khi du users)
             if not otc_interaction_df.empty:
-                self.svd.train(otc_interaction_df)
+                candidate_svd.train(otc_interaction_df)
             else:
                 print("[SVD] No interaction data. Skipping.")
 
+            evaluation = {
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+                "catalog_size": len(products),
+                "otc_catalog_size": len(otc_products),
+                "interaction_count": len(otc_interaction_df),
+                "basket_count": len(otc_baskets),
+                "tfidf_ready": candidate_tfidf.is_trained,
+                "nmf_ready": candidate_nmf.is_trained,
+                "svd_ready": candidate_svd.is_trained,
+                "fpgrowth_ready": candidate_fpgrowth.is_trained,
+            }
+            if not candidate_tfidf.is_trained or not candidate_nmf.is_trained:
+                raise RuntimeError("Candidate bundle failed readiness gate")
+
+            with self._swap_lock:
+                self.tfidf = candidate_tfidf
+                self.fpgrowth = candidate_fpgrowth
+                self.nmf = candidate_nmf
+                self.svd = candidate_svd
+                self.model_version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                self.last_evaluation = evaluation
+
         except Exception as e:
             print(f"[HybridEngine] Training error: {e}")
-            # Try loading from disk as fallback
-            self._load_from_disk()
+            # Keep the currently serving bundle. Load from disk only during initial startup.
+            if self.model_version == "untrained":
+                self._load_from_disk()
         finally:
             mongo_loader.disconnect()
 
@@ -85,29 +118,54 @@ class HybridEngine:
         self.fpgrowth.load()
         self.nmf.load()
         self.svd.load()
+        if self.tfidf.is_trained and self.nmf.is_trained:
+            self.model_version = "disk-fallback"
+
+    @property
+    def is_ready(self) -> bool:
+        return self.tfidf.is_trained and self.nmf.is_trained
+
+    def metrics(self) -> Dict[str, object]:
+        return {
+            "model_version": self.model_version,
+            "ready": self.is_ready,
+            "evaluation": self.last_evaluation,
+            "coverage": {
+                "tfidf_products": len(self.tfidf.product_index),
+                "trending_products": len(self.nmf.global_trending),
+                "svd_users": len(self.svd.user_index),
+                "association_antecedents": len(self.fpgrowth.rules_dict),
+            },
+        }
 
     async def get_personalized(self, user_id: str, limit: int = 12) -> Tuple[List[str], str]:
         """
         Fallback chain cho 'Danh Cho Ban':
         SVD (neu du data) → NMF filtered by user categories → NMF global
         """
+        feedback = await asyncio.to_thread(runtime_loader.get_user_feedback_exclusions, user_id)
+        excluded = feedback["dismissed"] | feedback["snoozed"]
+
+        def visible(values: List[str]) -> List[str]:
+            return [value for value in values if value not in excluded][:limit]
+
         # Try SVD first
         if self.svd.can_predict_for_user(user_id):
-            results, algo = await self.svd.get_for_user(user_id, limit)
+            results, algo = await self.svd.get_for_user(user_id, limit * 3)
             if results:
-                return results, algo
+                return visible(results), algo
 
         # Try NMF filtered by user's top categories
         # Sử dụng runtime_loader (persistent connection) — mongo_loader đã disconnect sau train_all()
         top_categories = await asyncio.to_thread(runtime_loader.get_user_top_categories, user_id)
         if top_categories:
-            results = await self.nmf.get_filtered_by_categories(top_categories, limit)
+            results = await self.nmf.get_filtered_by_categories(top_categories, limit * 3)
             if results:
-                return results, "nmf_personalized"
+                return visible(results), "nmf_personalized"
 
         # Fallback to global trending
-        results = await self.nmf.get_for_new_user(limit)
-        return results, "nmf_trending"
+        results = await self.nmf.get_for_new_user(limit * 3)
+        return visible(results), "nmf_trending"
 
     async def get_post_purchase(self, order_product_ids: List[str], limit: int = 8) -> List[str]:
         """
@@ -238,9 +296,11 @@ class HybridEngine:
                 return {str(product["_id"]) for product in products}
 
             eligible_product_ids = await asyncio.to_thread(_load_eligible_product_ids)
+            feedback = await asyncio.to_thread(runtime_loader.get_user_feedback_exclusions, user_id)
+            excluded = feedback["dismissed"] | feedback["snoozed"]
             return [
                 product_id for product_id in due_product_ids
-                if product_id in eligible_product_ids
+                if product_id in eligible_product_ids and product_id not in excluded
             ][:limit]
 
         except Exception as e:

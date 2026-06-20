@@ -114,3 +114,10 @@ class MongoCache:
         except Exception as e:
             print(f"[MongoCache] Invalidate pattern error: {e}")
             return 0
+
+    async def invalidate_user(self, user_id: str) -> int:
+        """Invalidate personalized and replenishment cache entries for one user."""
+        deleted = 0
+        for prefix in (f"fyt_{user_id}_", f"replenish_{user_id}_"):
+            deleted += await self.invalidate_pattern(prefix)
+        return deleted
