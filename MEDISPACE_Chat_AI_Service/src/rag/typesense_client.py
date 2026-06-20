@@ -24,24 +24,39 @@ TYPESENSE_API_KEY    = os.getenv("TYPESENSE_API_KEY", "")
 TYPESENSE_COLLECTION = os.getenv("TYPESENSE_PRODUCTS_COLLECTION", "products")
 TYPESENSE_ARTICLES   = os.getenv("TYPESENSE_ARTICLES_COLLECTION", "articles")
 
+# ── Hybrid Search flag ────────────────────────────────────────────────────────────
+# Đặt False để tắt vector search (ví dụ: khi embedding model chưa load xong).
+# Mặc định True — nếu Typesense chưa có embedding field, nó sẽ trả lỗi
+# và code tự fallback về BM25 thông qua try/except.
+_VECTOR_SEARCH_ENABLED = os.getenv("TYPESENSE_VECTOR_SEARCH", "true").lower() == "true"
+
 # Timeout ngắn — RAG nên fail fast để không block LLM call
 _TIMEOUT = httpx.Timeout(3.0, connect=2.0)
 
 # Intent → query strategy mapping
 # Mỗi intent có cách extract query và filter khác nhau
+#
+# Cải tiến BM25 (so với v1):
+#   - indications tăng weight vì user hay mô tả triệu chứng thay vì tên thuốc
+#   - num_typos per-field: tên thuốc cho typo cao (2), số liệu/category thấp (1)
+#   - prefix per-field: bật cho name/brandName (gõ chưa hết từ vẫn tìm được)
 INTENT_RAG_CONFIG: dict[str, dict] = {
-    # Tư vấn OTC: ưu tiên OTC, tìm theo tên + chỉ định
+    # Tư vấn OTC: ưu tiên theo triệu chứng + tên + thành phần
     "general": {
         "query_by":         "name,activeIngredients,indications,shortDescription,categoryName",
-        "query_by_weights": "5,4,3,2,1",
+        "query_by_weights": "5,4,5,2,2",           # indications nâng 3→5: khớp triệu chứng
+        "num_typos":        "2,2,1,1,1",            # typo tolerance per-field
+        "prefix":           "true,false,false,false,false",  # prefix search cho name
         "filter_by":        "isActive:=true && requiresPrescription:=false && inStock:=true",
         "sort_by":          "_text_match:desc,rating:desc,reviewCount:desc",
         "per_page":         5,
     },
-    # Tìm kiếm sản phẩm: rộng hơn, bao gồm cả Rx
+    # Tìm kiếm sản phẩm: rộng hơn, bao gồm cả Rx, thêm brandName
     "product_search": {
         "query_by":         "name,activeIngredients,indications,shortDescription,categoryName,brandName",
-        "query_by_weights": "5,4,3,2,1,1",
+        "query_by_weights": "6,4,4,2,2,3",           # name+brandName cao hơn (user tìm cụ thể)
+        "num_typos":        "2,2,1,1,1,2",            # brandName typo cao (tên nước ngoài)
+        "prefix":           "true,false,false,false,false,true",  # prefix cho name+brand
         "filter_by":        "isActive:=true && inStock:=true",
         "sort_by":          "_text_match:desc,requiresPrescription:asc,rating:desc",
         "per_page":         6,
@@ -129,26 +144,40 @@ async def search_products_for_rag(
     per_page = min(limit, rag_config["per_page"])
 
     params = {
-        "q":                 query,
-        "query_by":          rag_config["query_by"],
-        "query_by_weights":  rag_config["query_by_weights"],
-        "filter_by":         rag_config["filter_by"],
-        "sort_by":           rag_config["sort_by"],
-        "per_page":          per_page,
-        "num_typos":         2,
-        "include_fields":    (
+        "q":                  query,
+        "query_by":           rag_config["query_by"],
+        "query_by_weights":   rag_config["query_by_weights"],
+        "filter_by":          rag_config["filter_by"],
+        "sort_by":            rag_config["sort_by"],
+        "per_page":           per_page,
+        # Per-field typo tolerance (nếu config có) — fallback về global num_typos=2
+        "num_typos":          rag_config.get("num_typos", "2"),
+        # Prefix search per-field: giúp tìm khi user gõ chưa hết từ (vd: "Para" → Paracetamol)
+        "prefix":             rag_config.get("prefix", "true"),
+        # Dùng exhaustive search để không bỏ sót kết quả khi corpus nhỏ
+        "exhaustive_search":  "true",
+        "include_fields":     (
             "mongoId,name,slug,price,featuredImage,"
             "activeIngredients,indications,requiresPrescription,"
             "categoryName,brandName,rating,inStock"
         ),
     }
 
-    try:
+    # ── Hybrid Search: thêm vector_query nếu được bật ─────────────────────────────
+    # alpha=0.7: 70% BM25 score + 30% vector score
+    # Ưu tiên BM25 vì tên thuốc cụ thể match keyword tốt hơn semantic
+    # k=20: vector search trả 20 candidates rồi Typesense RRF fusion với BM25
+    # distance_threshold=0.85: loại kết quả về ngữ nghĩa quá xa
+    if _VECTOR_SEARCH_ENABLED:
+        params["vector_query"]  = "embedding:([], k:20, distance_threshold:0.85, alpha:0.7)"
+        params["exclude_fields"] = "embedding"   # không trả vector 384-dim về
+
+    async def _run_search(search_params: dict) -> list[dict]:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             url  = f"{TYPESENSE_URL}/collections/{TYPESENSE_COLLECTION}/documents/search"
             resp = await client.get(
                 url,
-                params=params,
+                params=search_params,
                 headers={"X-TYPESENSE-API-KEY": TYPESENSE_API_KEY},
             )
             resp.raise_for_status()
@@ -179,10 +208,27 @@ async def search_products_for_rag(
             )
             return products
 
+    try:
+        return await _run_search(params)
+
     except httpx.TimeoutException:
         logger.warning("[RAG] Typesense timeout cho query='%s'", query[:50])
         return []
     except httpx.HTTPStatusError as e:
+        if _VECTOR_SEARCH_ENABLED and "vector_query" in params:
+            logger.warning(
+                "[RAG] Vector search failed (%s), retry BM25-only cho query='%s'",
+                e.response.status_code,
+                query[:50],
+            )
+            bm25_params = dict(params)
+            bm25_params.pop("vector_query", None)
+            bm25_params.pop("exclude_fields", None)
+            try:
+                return await _run_search(bm25_params)
+            except Exception as retry_error:
+                logger.warning("[RAG] BM25 fallback error: %s", str(retry_error))
+                return []
         logger.warning("[RAG] Typesense HTTP error: %s", e.response.status_code)
         return []
     except Exception as e:
@@ -192,7 +238,7 @@ async def search_products_for_rag(
 
 async def search_articles_for_rag(
     message: str,
-    limit: int = 2,
+    limit: int = 3,    # Tăng từ 2→3: AI có thêm 1 bài viết context y tế
 ) -> list[dict]:
     """
     Query Typesense articles collection để lấy bài viết sức khỏe liên quan.
@@ -207,22 +253,30 @@ async def search_articles_for_rag(
 
     query = message.strip()[:100]
     params = {
-        "q":            query,
-        "query_by":     "title,excerpt,content,tags",
+        "q":                query,
+        "query_by":         "title,excerpt,content,tags",
         "query_by_weights": "5,3,2,1",
-        "filter_by":    "isPublished:=true",
-        "sort_by":      "_text_match:desc,viewCount:desc",
-        "per_page":     limit,
-        "num_typos":    1,
-        "include_fields": "mongoId,title,excerpt,slug,categoryName,tags",
+        "filter_by":        "isPublished:=true",
+        "sort_by":          "_text_match:desc,viewCount:desc",
+        "per_page":         limit,
+        "num_typos":        1,
+        "include_fields":   "mongoId,title,excerpt,slug,categoryName,tags",
     }
 
-    try:
+    # ── Hybrid Search cho articles ───────────────────────────────────────────────
+    # alpha=0.6: semantic mạnh hơn (60% BM25, 40% vector) vì câu hỏi y tế
+    # thường mapping với chủ đề bài viết theo ngữ nghĩa, không chỉ keyword
+    # (VD: "cao huyết áp" → bài về tim mạch, giảm muối, tăng cường kali)
+    if _VECTOR_SEARCH_ENABLED:
+        params["vector_query"]  = "embedding:([], k:10, distance_threshold:0.80, alpha:0.6)"
+        params["exclude_fields"] = "embedding"
+
+    async def _run_search(search_params: dict) -> list[dict]:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             url  = f"{TYPESENSE_URL}/collections/{TYPESENSE_ARTICLES}/documents/search"
             resp = await client.get(
                 url,
-                params=params,
+                params=search_params,
                 headers={"X-TYPESENSE-API-KEY": TYPESENSE_API_KEY},
             )
             resp.raise_for_status()
@@ -245,6 +299,26 @@ async def search_articles_for_rag(
             )
             return articles
 
+    try:
+        return await _run_search(params)
+
+    except httpx.HTTPStatusError as e:
+        if _VECTOR_SEARCH_ENABLED and "vector_query" in params:
+            logger.warning(
+                "[RAG-Articles] Vector search failed (%s), retry BM25-only cho query='%s'",
+                e.response.status_code,
+                query[:40],
+            )
+            bm25_params = dict(params)
+            bm25_params.pop("vector_query", None)
+            bm25_params.pop("exclude_fields", None)
+            try:
+                return await _run_search(bm25_params)
+            except Exception as retry_error:
+                logger.warning("[RAG-Articles] BM25 fallback error: %s", str(retry_error))
+                return []
+        logger.warning("[RAG-Articles] HTTP error: %s", e.response.status_code)
+        return []
     except Exception as e:
         logger.warning("[RAG-Articles] Error: %s", str(e))
         return []

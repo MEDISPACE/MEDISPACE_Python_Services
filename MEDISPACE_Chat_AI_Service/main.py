@@ -12,6 +12,7 @@ Phase 1 (2026-05):
 import os
 import logging
 import re
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -33,6 +34,26 @@ logging.basicConfig(
 logger = logging.getLogger("chat_ai")
 
 agent = PharmacyAgent()
+
+async def as_sse(event_iter):
+    try:
+        async for event in event_iter:
+            if event is None:
+                continue
+            raw = event.decode("utf-8") if isinstance(event, bytes) else str(event)
+            raw = raw.strip()
+            if not raw:
+                continue
+            if raw.startswith("data:"):
+                yield raw + "\n\n"
+            else:
+                yield f"data: {raw}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as exc:
+        logger.error("[SSE] stream wrapper error: %s", str(exc), exc_info=True)
+        payload = json.dumps({"type": "error", "message": "AI stream interrupted"}, ensure_ascii=False)
+        yield f"data: {payload}\n\n"
+        yield "data: [DONE]\n\n"
 
 
 @asynccontextmanager
@@ -67,6 +88,7 @@ class ChatRequest(BaseModel):
     history: Optional[List[dict]] = None
     context_products: Optional[List[dict]] = None
     context_data: Optional[dict] = None        # Phase 3: real user data (orders, loyalty)
+    image_url: Optional[str] = None            # Vision: URL ảnh gửi kèm từ Cloudinary
 
 
 class ChatResponse(BaseModel):
@@ -143,7 +165,10 @@ async def health():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    logger.info("[/chat] user=%s conv=%s msg_len=%d", req.user_id, req.conversation_id, len(req.message))
+    logger.info(
+        "[/chat] user=%s conv=%s msg_len=%d image=%s",
+        req.user_id, req.conversation_id, len(req.message), bool(req.image_url)
+    )
     try:
         result = await agent.respond(
             message=req.message,
@@ -152,6 +177,7 @@ async def chat(req: ChatRequest):
             history=req.history,
             context_products=req.context_products,
             context_data=req.context_data,
+            image_url=req.image_url,
         )
         logger.info("[/chat] classification=%s escalated=%s", result["classification"], result["is_escalated"])
         return ChatResponse(**result)
@@ -162,17 +188,21 @@ async def chat(req: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    logger.info("[/chat/stream] user=%s conv=%s msg_len=%d", req.user_id, req.conversation_id, len(req.message))
+    logger.info(
+        "[/chat/stream] user=%s conv=%s msg_len=%d image=%s",
+        req.user_id, req.conversation_id, len(req.message), bool(req.image_url)
+    )
     try:
         return StreamingResponse(
-            agent.stream_respond(
+            as_sse(agent.stream_respond(
                 message=req.message,
                 user_id=req.user_id,
                 conversation_id=req.conversation_id,
                 history=req.history,
                 context_products=req.context_products,
                 context_data=req.context_data,
-            ),
+                image_url=req.image_url,
+            )),
             media_type="text/event-stream"
         )
     except Exception as e:
