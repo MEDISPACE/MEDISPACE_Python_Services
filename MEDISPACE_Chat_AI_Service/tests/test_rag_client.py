@@ -185,3 +185,54 @@ class TestSearchProductsForRag:
 
                 result = await search_products_for_rag("xyz không tồn tại", "general")
                 assert result == []
+
+    async def test_retries_bm25_when_vector_search_fails(self):
+        """Vector query loi thi retry BM25-only truoc khi tra rong."""
+        import httpx
+
+        error_response = MagicMock()
+        error_response.status_code = 400
+        error_response.text = "Unknown field embedding"
+        vector_error = httpx.HTTPStatusError(
+            "vector error",
+            request=MagicMock(),
+            response=error_response,
+        )
+
+        vector_response = MagicMock()
+        vector_response.raise_for_status = MagicMock(side_effect=vector_error)
+
+        bm25_response = MagicMock()
+        bm25_response.raise_for_status = MagicMock()
+        bm25_response.json = MagicMock(return_value={
+            "hits": [
+                {
+                    "document": {
+                        "mongoId": "bm25-1",
+                        "name": "Vitamin C",
+                        "slug": "vitamin-c",
+                        "price": 100000,
+                        "requiresPrescription": False,
+                    }
+                }
+            ]
+        })
+
+        with patch("src.rag.typesense_client.TYPESENSE_API_KEY", "test-key"):
+            with patch("src.rag.typesense_client._VECTOR_SEARCH_ENABLED", True):
+                with patch("httpx.AsyncClient") as mock_client_cls:
+                    mock_client = AsyncMock()
+                    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                    mock_client.__aexit__ = AsyncMock(return_value=None)
+                    mock_client.get = AsyncMock(side_effect=[vector_response, bm25_response])
+                    mock_client_cls.return_value = mock_client
+
+                    result = await search_products_for_rag("vitamin c", "general")
+
+                    assert len(result) == 1
+                    assert result[0]["mongoId"] == "bm25-1"
+                    assert mock_client.get.await_count == 2
+                    first_params = mock_client.get.await_args_list[0].kwargs["params"]
+                    second_params = mock_client.get.await_args_list[1].kwargs["params"]
+                    assert "vector_query" in first_params
+                    assert "vector_query" not in second_params

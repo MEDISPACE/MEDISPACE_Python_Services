@@ -8,16 +8,30 @@ Phase 1 Improvements:
 - [B3] Dynamic temperature theo intent
 - Few-shot examples mở rộng: 3 → 8+ examples
 - Prompt templates chuyên biệt cho từng intent nhóm
+
+Fix Log:
+- [FIX-1] is_escalated: dùng intent-based logic thay vì was_sanitized
+- [FIX-4] LLM retry: thêm exponential backoff 2 lần khi timeout
+- [FIX-5] [GỢI Ý] parser: mở rộng pattern match nhiều dạng
+- [FIX-6] System prompt: thêm ngày hiện tại
+- [FIX-7] History: MAX_HISTORY_TURNS=6 đồng bộ với BE (6 messages)
+- [FIX-8] RAG articles: mở rộng cho return_request và coupon_inquiry
 """
 import os
 import json
+import base64
 import httpx
+import asyncio
 import logging
 import re
+import unicodedata
+from datetime import datetime
 from src.guardrails.pre_filter import (
     classify_message,
+    GREETING_RESPONSE,
     EMERGENCY_RESPONSE,
     PRESCRIPTION_RESPONSE,
+    PERSONALIZED_DOSAGE_RESPONSE,
     MENTAL_HEALTH_RESPONSE,
     TOO_LONG_RESPONSE,
 )
@@ -29,9 +43,12 @@ logger = logging.getLogger("chat_ai.agent")
 LLM_BASE  = os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space").rstrip("/")
 LLM_MODEL = os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf")
 LLM_MAX_TOKENS = int(os.getenv("CUSTOM_LLM_MAX_TOKENS", "1536"))
+LLM_IMAGE_MAX_TOKENS = int(os.getenv("CUSTOM_LLM_IMAGE_MAX_TOKENS", str(max(4096, LLM_MAX_TOKENS))))
+LLM_MAX_RETRIES = int(os.getenv("CUSTOM_LLM_MAX_RETRIES", "2"))  # [FIX-4]
 
 # ── Context window limits ─────────────────────────────────────────────────────
-MAX_HISTORY_TURNS = 10      # Tối đa 10 lượt hội thoại (user+assistant mỗi lượt)
+# [FIX-7] Đồng bộ với BE: BE giới hạn limit(6) messages khi gửi history
+MAX_HISTORY_TURNS = 6      # Tối đa 6 lượt hội thoại (user+assistant mỗi lượt)
 MAX_HISTORY_CHARS = 3000    # Tối đa 3000 ký tự trong history
 
 # ── RAG config ────────────────────────────────────────────────────────
@@ -39,11 +56,59 @@ MAX_HISTORY_CHARS = 3000    # Tối đa 3000 ký tự trong history
 RAG_MIN_PRODUCTS = 2        # Dưới 2 sản phẩm → trigger Typesense auto-fetch
 RAG_MAX_PRODUCTS = 6        # Tối đa sản phẩm đưa vào RAG context
 
+MAX_IMAGE_BYTES = int(os.getenv("CHAT_AI_MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
+IMAGE_FETCH_TIMEOUT = float(os.getenv("CHAT_AI_IMAGE_FETCH_TIMEOUT", "12"))
+SUPPORTED_IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
+
+
+class ImageFetchError(Exception):
+    pass
+
+
+def _normalize_text(value: str) -> str:
+    value = unicodedata.normalize("NFD", value or "")
+    value = "".join(ch for ch in value if unicodedata.category(ch) != "Mn")
+    return value.lower()
+
+
+async def normalize_image_for_llm(image_url: str) -> str:
+    """Download an image URL and return a data URL so the LLM receives bytes directly."""
+    if not image_url or not re.match(r"^https?://", image_url, re.IGNORECASE):
+        raise ImageFetchError("image_url must be an http(s) URL")
+
+    try:
+        async with httpx.AsyncClient(timeout=IMAGE_FETCH_TIMEOUT, follow_redirects=True) as client:
+            async with client.stream("GET", image_url) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+                if content_type not in SUPPORTED_IMAGE_MIME:
+                    raise ImageFetchError("URL không phải ảnh hợp lệ")
+
+                chunks = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > MAX_IMAGE_BYTES:
+                        raise ImageFetchError("Ảnh quá lớn, vui lòng gửi ảnh nhỏ hơn 8MB")
+                    chunks.append(chunk)
+
+        image_bytes = b"".join(chunks)
+        if not image_bytes:
+            raise ImageFetchError("Không tải được nội dung ảnh")
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except ImageFetchError:
+        raise
+    except Exception as exc:
+        raise ImageFetchError("Ảnh không truy cập được, vui lòng gửi lại ảnh rõ hơn") from exc
+
 # ── Intent → Temperature mapping ─────────────────────────────────────────────
 INTENT_TEMPERATURE: dict[str, float] = {
     # An toàn y tế → ít sáng tạo, ít hallucination
     "general":              0.30,
+    "drug_info_general":    0.25,
     "product_search":       0.35,
+    "image_only":           0.30,   # phân tích ảnh
     # Thông tin tra cứu → trả lời chính xác
     "order_tracking":       0.20,
     "prescription_status":  0.20,
@@ -52,13 +117,62 @@ INTENT_TEMPERATURE: dict[str, float] = {
     "return_request":       0.20,
 }
 
+# ── Image analysis system prompt ─────────────────────────────────────────
+IMAGE_SYSTEM_PROMPT = """Bạn là Trợ lý Nhà thuốc AI của Medispace — một nền tảng nhà thuốc trực tuyến uy tín tại Việt Nam.
+Bạn vừa nhận được một hình ảnh từ khách hàng. Hãy phân tích ảnh và phản hồi theo các tình huống sau:
+
+**Nếu ảnh là ĐƠN THUỐC KÊ ĐƠN (có tên bầc sĩ, tên bệnh viện, danh sách thuốc, liều lượng):**
+- Đọc và liệt kê rõ các thuốc có trong đơn (tên thuốc, liều lượng, cách dùng nếu thấy)
+- Giải thích ngắn gọn công dụng của từng thuốc bằng ngôn ngữ dễ hiểu
+- Cuối cùng HỎi người dùng: "Bạn có muốn gửi đơn thuốc này cho Dược sĩ của Medispace để được tư vấn và xác nhận đơn không?"
+- QUAN TRỌNG: Nhắc rõ đây là thuốc kê đơn, cần theo đúng chỉ định của bác sĩ
+
+**Nếu ảnh là HỘP/VỆ THUỐC, thực phẩm chức năng, mỹ phẩm (có nhãn hiệu, thông tin sản phẩm):**
+- Mô tả sản phẩm tìm thấy trong ảnh
+- Nêu công dụng, thành phần chính nếu thấy
+- Giợi ý tìm kiếm sản phẩm tương tự hoặc chính hãng tại Medispace
+
+**Nếu ảnh là TRIỆU CHỨNG cơ thể (vết thương, da liễu, phát ban, sưng tấy...)**:
+- Kh?ng chẩn đoán bệnh dựa trên ảnh
+- Nhẹ nhàng gi?i thích giới hạn của AI trong việc chẩn đoán
+- Khưyến nghị gặp bác sĩ hoặc dược sĩ để được thăm khám trực tiếp
+
+**Nếu ảnh là KẾT QUẢ XÉT NGHIỆM, phiếu chẩn đoán, phiếu xết nghiệm:**
+- Kh?ng giải thích kết quả y tế chính xác dựa trên ảnh
+- Khưyến nghị gặp bác sĩ được điều trị để giải thích kết quả
+- Đề nghị kết nối Dược sĩ Medispace nếu cần tư vấn thêm
+
+**Nếu ảnh không rõ hoặc không liên quan đến y tế/sản phẩm:**
+- Thành thật cho biết không phân tích được ảnh này
+- Hỏi người dùng cần hỗ trợ gì về thuốc hoặc sức khỏe
+
+Luôn trả lời bằng tiếng Việt, thân thiện, chuyên nghiệp. Kông đoán điều trị, chỉ cung cấp thông tin cơ bản.
+"""
+
+IMAGE_SAFETY_POLICY = """
+CHÍNH SÁCH ẢNH BỔ SUNG (ưu tiên cao hơn nếu mâu thuẫn với phần trên):
+- Không từ chối toàn bộ chỉ vì ảnh là đơn thuốc. Được đọc tên thuốc, hoạt chất, hàm lượng, số lượng và giải thích công dụng chung nếu nhìn thấy rõ.
+- Khi đọc từ ảnh, dùng cách nói thận trọng như "mình đọc được", "có vẻ là", "theo ảnh" vì OCR có thể sai.
+- Với đơn thuốc, không xác nhận đơn phù hợp với người dùng, không tự đổi/ngưng thuốc, không đưa phác đồ hoặc liều cá nhân hóa ngoài việc đọc lại thông tin có trên ảnh.
+- Với ảnh không kèm câu hỏi, hãy mô tả/triage ảnh trước, đọc nội dung nhìn thấy nếu có, rồi hỏi người dùng muốn hỗ trợ hướng nào tiếp theo.
+- Với ảnh hộp thuốc/nhãn thuốc, đọc tên, thành phần, công dụng trên nhãn nếu thấy; nếu là thuốc kê đơn thì nhắc cần dùng theo đơn và hỏi Dược sĩ.
+- Với ảnh triệu chứng/vết thương/da liễu, chỉ mô tả dấu hiệu nhìn thấy, không chẩn đoán; hỏi thêm triệu chứng và nêu dấu hiệu cần đi khám sớm.
+- Cuối câu trả lời thêm 2-3 câu hỏi gợi ý theo format: [GỢI Ý]: Câu 1 | Câu 2
+"""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SYSTEM PROMPT TEMPLATES
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Shared header (dùng trong mọi prompt) ─────────────────────────────────────
-_HEADER = """Bạn là Trợ lý Ảo AI của Medispace — nền tảng dược phẩm trực tuyến hàng đầu Việt Nam.
+# [FIX-6] _build_header() trả về header với ngày hiện tại.
+# KHÔNG dùng module-level constant — ngày được inject ĐỘNG mỗi request
+# trong _build_messages() để tránh bị freeze khi server chạy qua ngày mới.
+def _build_header() -> str:
+    today = datetime.now().strftime("%d/%m/%Y")
+    return f"""Bạn là Trợ lý Ảo AI của Medispace — nền tảng dược phẩm trực tuyến hàng đầu Việt Nam.
+Ngày hôm nay: {today}.
 
 QUY TẮC CHUNG (bắt buộc với MỌI phản hồi):
 1. Trả lời bằng tiếng Việt, thân thiện, lịch sự, ngắn gọn (tối đa 200 từ).
@@ -66,6 +180,10 @@ QUY TẮC CHUNG (bắt buộc với MỌI phản hồi):
 3. Tên thương hiệu LUÔN viết đầy đủ là "Medispace", không viết tắt.
 4. Cuối mỗi phản hồi LUÔN thêm 2-3 câu hỏi gợi ý: [GỢI Ý]: Câu 1 | Câu 2
 """
+
+# _HEADER dùng làm placeholder trong templates (ngày sẽ bị thay thế động).
+# Không xoá dòng này — templates concat _HEADER khi định nghĩa.
+_HEADER = _build_header()
 
 # ── [GENERAL + PRODUCT_SEARCH] Tư vấn sức khỏe & sản phẩm ───────────────────
 GENERAL_PROMPT_TEMPLATE = _HEADER + """
@@ -289,8 +407,42 @@ Hãy trả lời câu hỏi về trạng thái đơn thuốc:
 """
 
 # ── INTENT → PROMPT mapping ───────────────────────────────────────────────────
+DRUG_INFO_GENERAL_PROMPT = _HEADER + """
+VAI TRO: Tro ly thong tin thuoc cua Medispace. Nhiem vu la tra loi CONG DUNG CHUNG, chi dinh thong thuong va luu y an toan co ban ve mot thuoc/hoat chat.
+
+PHAM VI DUOC TRA LOI:
+- Duoc giai thich thuoc/hoat chat dung de lam gi, nhom thuoc, cong dung chung, chi dinh pho bien, tac dung phu va luu y thong thuong.
+- Neu la thuoc ke don hoac khang sinh, VAN duoc noi cong dung chung, nhung phai nhac: chi dung khi co don/chi dinh cua bac si, khong tu mua, khong tu dung lai don cu.
+- Neu ten thuoc mo ho, trung ten, hoac co nhieu ham luong/dang bao che, hay hoi them anh hop thuoc, hoat chat, ham luong hoac don thuoc de xac dinh chinh xac.
+
+KHONG DUOC:
+- Khong dua lieu dung ca nhan hoa, so vien moi ngay, thoi gian dung, phac do dieu tri cho benh cu the cua user.
+- Khong xac nhan thuoc co phu hop voi tinh trang cua user hay khong.
+- Khong khuyen doi/ngung/thay the thuoc trong don.
+- Khong huong dan mua thuoc ke don khi user khong co don.
+
+{rag_context}
+
+VI DU MAU:
+
+User: Amoxicillin cong dung gi?
+Assistant: Amoxicillin la khang sinh nhom penicillin, thuong duoc bac si chi dinh de dieu tri mot so nhiem khu an do vi khu an nhay cam, vi du nhiem khu an tai mui hong, ho hap, tiet nieu hoac da. Day la thuoc ke don, ban khong nen tu mua hoac tu dung vi co nguy co di ung, khang khang sinh va dung sai benh. Neu ban co don thuoc, hay gui anh don de Duoc si Medispace kiem tra giup.
+[GOI Y]: Vi sao khang sinh can don bac si? | Gui anh don thuoc de kiem tra
+
+User: Esomeprazole dung de lam gi?
+Assistant: Esomeprazole la thuoc giam tiet acid da day, thuong duoc dung trong cac tinh huong nhu trao nguoc da day-thuc quan, viem loet da day-ta trang hoac bao ve da day khi dung mot so thuoc theo chi dinh. Thong tin nay chi de tham khao, ban nen dung theo huong dan tren don hoac hoi Duoc si Medispace neu dang co benh nen, mang thai, hoac dung kem thuoc khac.
+[GOI Y]: Esomeprazole can luu y gi? | Thuoc nay co can don khong?
+
+User: Thuoc ABC la thuoc gi?
+Assistant: Minh chua du thong tin de xac dinh chinh xac thuoc ABC, vi nhieu san pham co ten gan giong nhau hoac khac hoat chat/hang san xuat. Ban co the gui anh hop thuoc, mat sau nhan, hoat chat va ham luong de minh doc thong tin chung giup ban.
+[GOI Y]: Gui anh hop thuoc | Cach doc hoat chat tren nhan thuoc
+
+Hay tra loi cau hoi ve cong dung thuoc cua nguoi dung:
+"""
+
 INTENT_PROMPT_MAP: dict[str, str] = {
     "general":              GENERAL_PROMPT_TEMPLATE,
+    "drug_info_general":    DRUG_INFO_GENERAL_PROMPT,
     "product_search":       GENERAL_PROMPT_TEMPLATE,
     "order_tracking":       ORDER_TRACKING_PROMPT,
     "loyalty_inquiry":      LOYALTY_PROMPT,
@@ -361,7 +513,7 @@ def is_product_mentioned(db_name: str, reply: str) -> bool:
 
 class PharmacyAgent:
     def __init__(self):
-        self.timeout = httpx.Timeout(60.0, connect=10.0)
+        self.timeout = httpx.Timeout(float(os.getenv("CUSTOM_LLM_TIMEOUT_SECONDS", "120")), connect=10.0)
 
     # ── HELPER METHODS ────────────────────────────────────────────────────────
 
@@ -376,6 +528,8 @@ class PharmacyAgent:
                 price       = p.get("price")
                 ingredients = p.get("activeIngredients", "")
                 indications = p.get("indications", "")
+                if p.get("requiresPrescription"):
+                    name = f"{name} [Rx - can don/duoc si]"
                 if name:
                     prod_lines.append(
                         f"- {name} (Giá: {price}đ | Thành phần: {ingredients} | Chỉ định: {indications})"
@@ -386,6 +540,11 @@ class PharmacyAgent:
                     + "\n".join(prod_lines)
                     + "\n\nQuy tắc: Ưu tiên giới thiệu tự nhiên nếu phù hợp. Tuyệt đối không bịa tên sản phẩm ngoài danh sách."
                 )
+
+        if context_products and any(p.get("requiresPrescription") for p in context_products):
+            parts.append(
+                "RX SAFETY: San pham co tag [Rx - can don/duoc si] khong duoc goi y nhu OTC mua nhanh; huong khach ket noi duoc si hoac tai don thuoc."
+            )
 
         if articles:
             art_lines = []
@@ -405,7 +564,7 @@ class PharmacyAgent:
     def _build_user_context(self, context_data: dict | None, intent: str) -> str:
         """
         Phase 3 — Context Enrichment:
-        Format real user data (orders, loyalty, history) thành chuỗi
+        Format real user data (orders, loyalty, medical info) thành chuỗi
         để inject vào system prompt trước khi gọi LLM.
         Chỉ inject khi có data thực tế và intent phù hợp.
         """
@@ -413,6 +572,48 @@ class PharmacyAgent:
             return ""
 
         lines = []
+
+        # ── Medical Info — inject vào MỌI intent (an toàn y tế) ──────────────
+        # Giúp AI cá nhân hóa: cảnh báo dị ứng, điều chỉnh gợi ý theo bệnh nền
+        medical = context_data.get("medicalInfo")
+        if medical:
+            medical_lines = []
+
+            allergies = medical.get("allergies", [])
+            if allergies:
+                medical_lines.append(
+                    f"⚠️ DỊ ỨNG: {', '.join(allergies)} "
+                    f"(TUYỆT ĐỐI không gợi ý nhóm thuốc này hoặc cùng nhóm hoạt chất)"
+                )
+
+            chronic = medical.get("chronic_diseases", [])
+            if chronic:
+                medical_lines.append(
+                    f"📋 BỆNH NỀN: {', '.join(chronic)} "
+                    f"(Lưu ý khi tư vấn thuốc ảnh hưởng đến bệnh này)"
+                )
+
+            meds = medical.get("current_medications", [])
+            if meds:
+                med_strs = [
+                    f"{m.get('drug_name', '')} {m.get('dosage', '')} {m.get('frequency', '')}".strip()
+                    for m in meds if m.get("drug_name")
+                ]
+                if med_strs:
+                    medical_lines.append(
+                        f"💊 ĐANG DÙNG THUỐC: {', '.join(med_strs)} "
+                        f"(Cảnh báo nếu có tương tác thuốc với sản phẩm gợi ý)"
+                    )
+
+            blood_type = medical.get("blood_type")
+            if blood_type:
+                medical_lines.append(f"🩸 Nhóm máu: {blood_type}")
+
+            if medical_lines:
+                lines.append(
+                    "THÔNG TIN Y TẾ CÁ NHÂN CỦA KHÁCH HÀNG (bắt buộc xem xét khi tư vấn):\n"
+                    + "\n".join(medical_lines)
+                )
 
         # ── Order data (cho order_tracking intent) ────────────────────────────
         if intent == "order_tracking":
@@ -428,7 +629,9 @@ class PharmacyAgent:
                         "cancelled":  "Đã hủy",
                         "refunded":   "Đã hoàn tiền",
                     }
-                    status_vn = status_map.get(o.get("status", ""), o.get("status", "Không rõ"))
+                    status_map["confirmed"] = "Đã xác nhận"
+                    status = o.get("status") or o.get("orderStatus") or ""
+                    status_vn = status_map.get(status, status or "Không rõ")
                     items_str = ", ".join(
                         f"{item.get('name', '')} x{item.get('quantity', 1)}"
                         for item in o.get("items", [])[:3]
@@ -440,8 +643,11 @@ class PharmacyAgent:
                         f"| Tổng tiền: {o.get('totalAmount', 0):,}đ "
                         f"| Sản phẩm: {items_str}"
                     )
-                    if o.get("trackingCode"):
-                        line += f" | Mã vận đơn: {o.get('trackingCode')}"
+                    tracking_code = o.get("trackingCode") or o.get("trackingNumber")
+                    if tracking_code:
+                        line += f" | Mã vận đơn: {tracking_code}"
+                    if o.get("estimatedDeliveryDate"):
+                        line += f" | Dự kiến giao: {o.get('estimatedDeliveryDate')}"
                     lines.append(line)
 
         # ── Loyalty data (cho loyalty_inquiry intent) ─────────────────────────
@@ -454,12 +660,18 @@ class PharmacyAgent:
                 }
                 tier_vn = tier_map.get(loyalty.get("tier", ""), loyalty.get("tier", "Thành viên"))
                 lines.append("THÔNG TIN LOYALTY THỰC TẾ CỦA KHÁCH HÀNG:")
+                points = loyalty.get("points", loyalty.get("pointsBalance", 0))
                 lines.append(
-                    f"- Điểm hiện có: {loyalty.get('points', 0):,} điểm "
-                    f"(= {loyalty.get('points', 0) * 100:,}đ) "
-                    f"| Hạng: {tier_vn} "
+                    f"- Điểm hiện có: {points:,} điểm "
+                    f"(= {points * 100:,}đ) "
+                    f"| Hạng: {loyalty.get('tierLabel') or tier_vn} "
                     f"| Tổng chi tiêu: {loyalty.get('totalSpent', 0):,}đ"
                 )
+                if loyalty.get("nextTierLabel") and loyalty.get("amountToNextTier") is not None:
+                    lines.append(
+                        f"- Hạng tiếp theo: {loyalty.get('nextTierLabel')} "
+                        f"| Cần thêm: {loyalty.get('amountToNextTier', 0):,}đ"
+                    )
 
         # ── Purchase history (cho order_tracking khi hỏi lịch sử mua) ─────────
         purchase_history = context_data.get("purchaseHistory", [])
@@ -492,6 +704,7 @@ class PharmacyAgent:
         - Chọn prompt template theo intent
         - Giới hạn history theo MAX_HISTORY_TURNS và MAX_HISTORY_CHARS [FIX A1]
         - Inject user context data (orders, loyalty) [Phase 3]
+        - [FIX-DATE] Cập nhật ngày hiện tại vào system prompt mỗi request
         """
         # Chọn prompt template theo intent
         prompt_template = INTENT_PROMPT_MAP.get(intent, GENERAL_PROMPT_TEMPLATE)
@@ -516,18 +729,59 @@ class PharmacyAgent:
         if user_context_block and "{context_data}" not in prompt_template:
             system_prompt = user_context_block + "\n" + system_prompt
 
+        # [FIX-DATE] Inject ngày hiện tại động mỗi request.
+        # Templates dùng _HEADER (build lúc module load) → ngày có thể cũ
+        # nếu server chạy qua ngày mới mà không restart.
+        # Dùng regex replace để đảm bảo luôn hiển thị đúng ngày thực tế.
+        today = datetime.now().strftime("%d/%m/%Y")
+        system_prompt = re.sub(
+            r'Ngày hôm nay: \d{2}/\d{2}/\d{4}\.',
+            f'Ngày hôm nay: {today}.',
+            system_prompt,
+        )
+
         messages = [{"role": "system", "content": system_prompt}]
 
-        # ── [FIX A1] Context window management ──────────────────────────────
+        # ── [FIX A1 v2] Smart history sliding window ──────────────────────────
+        # Khác với v1 (cắt từ đầu): giữ turn đầu nếu chứa entity y tế quan trọng
+        # (độ tuổi, dị ứng, bệnh nền) — tránh AI bỏ sót info khi hội thoại dài
         if history:
-            # Chỉ lấy N lượt cuối (mỗi lượt = 1 user + 1 assistant)
             recent = history[-(MAX_HISTORY_TURNS * 2):]
 
-            # Nếu tổng ký tự vẫn vượt giới hạn → cắt từ đầu
+            # Từ khóa y tế quan trọng cần giữ lại trong context
+            _MEDICAL_ENTITY_KEYWORDS = (
+                "tuổi", "năm tuổi", "trẻ em", "em bé", "thai", "mang thai", "cho con bú",
+                "dị ứng", "không hợp", "bệnh nền", "tiểu đường", "huyết áp",
+                "bệnh tim", "suy thận", "suy gan", "hen suyễn", "mẫn cảm",
+            )
+
+            def _has_medical_entity(content: str) -> bool:
+                lc = content.lower()
+                return any(kw in lc for kw in _MEDICAL_ENTITY_KEYWORDS)
+
             total_chars = sum(len(m.get("content", "")) for m in recent)
-            while recent and total_chars > MAX_HISTORY_CHARS:
-                removed = recent.pop(0)
-                total_chars -= len(removed.get("content", ""))
+
+            if total_chars > MAX_HISTORY_CHARS and len(recent) >= 4:
+                first_turn  = recent[:2]   # Turn đầu tiên (user + assistant)
+                rest_turns  = recent[2:]   # Các turn còn lại
+                first_text  = " ".join(m.get("content", "") for m in first_turn)
+
+                if _has_medical_entity(first_text):
+                    # Giữ turn đầu, cắt từ turn thứ 2 trở đi
+                    first_chars = sum(len(m.get("content", "")) for m in first_turn)
+                    budget_rest = MAX_HISTORY_CHARS - first_chars
+                    while rest_turns and sum(len(m.get("content", "")) for m in rest_turns) > budget_rest:
+                        rest_turns.pop(0)
+                    recent = first_turn + rest_turns
+                else:
+                    # Không có entity đặc biệt → cắt từ đầu như cũ
+                    while recent and total_chars > MAX_HISTORY_CHARS:
+                        removed = recent.pop(0)
+                        total_chars -= len(removed.get("content", ""))
+            else:
+                while recent and total_chars > MAX_HISTORY_CHARS:
+                    removed = recent.pop(0)
+                    total_chars -= len(removed.get("content", ""))
 
             for msg in recent:
                 role    = msg.get("role")
@@ -537,6 +791,7 @@ class PharmacyAgent:
 
         messages.append({"role": "user", "content": message})
         return messages
+
 
     def _process_final_reply(self, raw_reply: str, context_products: list) -> dict:
         """
@@ -548,11 +803,25 @@ class PharmacyAgent:
         safe_reply, was_sanitized = sanitize_response(raw_reply)
         logger.info("[PharmacyAgent] Sanitized: %s", was_sanitized)
 
-        # Tách câu hỏi gợi ý
+        # [FIX-5] Tách câu hỏi gợi ý — mở rộng pattern để bắt nhiều dạng LLM viết
+        # LLM có thể viết: [GỢI Ý]:, [Gợi ý]:, Gợi ý:, [Câu hỏi gợi ý]:, [GỢI Ý]:
         suggested_questions = []
-        match = re.search(r'\[GỢI Ý\]:\s*(.*)', safe_reply, re.IGNORECASE)
+        match = re.search(
+            r'\[(GỢI Ý|Gợi ý|GỢI Ý|Câu hỏi gợi ý|Câu hỏi)\]:\s*(.*)',
+            safe_reply,
+            re.IGNORECASE,
+        )
+        if not match:
+            # Fallback: không có dấu ngoặc vuông
+            match = re.search(
+                r'(?:^|\n)Gợi ý[^:]*:\s*(.*)',
+                safe_reply,
+                re.IGNORECASE | re.MULTILINE,
+            )
         if match:
-            q_list = match.group(1).split('|')
+            # Lấy group cuối (nội dung câu hỏi)
+            q_raw = match.group(match.lastindex)
+            q_list = q_raw.split('|')
             suggested_questions = [q.strip() for q in q_list if q.strip()]
             safe_reply = safe_reply[:match.start()].strip()
 
@@ -570,6 +839,7 @@ class PharmacyAgent:
                         "imageUrl": p.get("imageUrl", ""),
                         "unit":     p.get("unit", "Sản phẩm"),
                     })
+                    products_suggested[-1]["requiresPrescription"] = bool(p.get("requiresPrescription"))
 
         return {
             "safe_reply":          safe_reply,
@@ -603,9 +873,14 @@ class PharmacyAgent:
         fe_products: list,
     ) -> tuple[list, str]:
         """
-        Phase 2 — RAG enrichment logic:
-        Öu tiên sử dụng context_products từ FE nếu đủ (>= RAG_MIN_PRODUCTS).
-        Nếu thiếu → query Typesense để bổ sung, merge deduped by mongoId.
+        Phase 2 v2 — Always Merge RAG:
+        Luôn query Typesense song song với việc xử lý FE products.
+        FE products được ưu tiên làm anchor (người dùng đang xem).
+        Typesense bổ sung sản phẩm phù hợp với câu hỏi thực tế.
+
+        Lý do bỏ điều kiện skip Typesense khi FE đủ sản phẩm:
+        FE gửi context_products từ trang đang xem (VD: Vitamin C).
+        Nếu user hỏi "có thuốc ho không" → AI chỉ thấy Vitamin C → gợi ý sai.
 
         Returns:
             (merged_products, rag_source)
@@ -618,12 +893,7 @@ class PharmacyAgent:
 
         fe_count = len(fe_products)
 
-        # FE có đủ sản phẩm → dùng luôn (không tốn thêm network)
-        if fe_count >= RAG_MIN_PRODUCTS:
-            logger.info("[RAG] Dùng %d sản phẩm từ FE", fe_count)
-            return fe_products[:RAG_MAX_PRODUCTS], "fe_only"
-
-        # Thiếu → auto-fetch từ Typesense
+        # Luôn query Typesense — không skip dù FE đủ sản phẩm
         ts_products = await search_products_for_rag(
             message=message,
             intent=intent,
@@ -633,9 +903,17 @@ class PharmacyAgent:
         if not ts_products and not fe_products:
             return [], "none"
 
-        # Merge: FE trước, Typesense sau, dedup theo mongoId
-        seen     = {p.get("mongoId") for p in fe_products if p.get("mongoId")}
-        merged   = list(fe_products)  # giữ FE làm anchor
+        if not ts_products:
+            logger.info("[RAG] FE only: %d sản phẩm", fe_count)
+            return fe_products[:RAG_MAX_PRODUCTS], "fe_only"
+
+        if not fe_products:
+            logger.info("[RAG] Typesense only: %d sản phẩm", len(ts_products))
+            return ts_products[:RAG_MAX_PRODUCTS], "typesense_only"
+
+        # Merge: FE trước (anchor), Typesense sau, dedup theo mongoId
+        seen   = {p.get("mongoId") for p in fe_products if p.get("mongoId")}
+        merged = list(fe_products)  # giữ FE làm anchor
         for p in ts_products:
             mid = p.get("mongoId")
             if mid and mid not in seen:
@@ -644,12 +922,334 @@ class PharmacyAgent:
             if len(merged) >= RAG_MAX_PRODUCTS:
                 break
 
-        source = "merged" if fe_products else "typesense_only"
         logger.info(
-            "[RAG] %s: FE=%d + TS=%d → tổng %d sản phẩm",
-            source, fe_count, len(ts_products), len(merged),
+            "[RAG] Merged: FE=%d + TS=%d → tổng %d sản phẩm",
+            fe_count, len(ts_products), len(merged),
         )
-        return merged, source
+        return merged[:RAG_MAX_PRODUCTS], "merged"
+
+    # ── PRIVATE: Image pipeline ───────────────────────────────────────────────
+
+    def _build_multimodal_messages(
+        self,
+        image_url: str,
+        text_message: str,
+        history: list = None,
+    ) -> list:
+        """
+        Xây dựng danh sách messages theo chuẩn OpenAI Vision (multimodal).
+        Gemma 4 / llama.cpp hỗ trợ format content là array:
+          [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]
+        """
+        messages = [{"role": "system", "content": IMAGE_SYSTEM_PROMPT + "\n\n" + IMAGE_SAFETY_POLICY}]
+
+        # Thêm history (chỉ text, không đưa ảnh cũ vào để tiết kiệm context)
+        if history:
+            recent = history[-(4 * 2):]  # 4 turns gần nhất
+            for msg in recent:
+                role    = msg.get("role")
+                content = msg.get("content")
+                if role in ["user", "assistant"] and content:
+                    messages.append({"role": role, "content": content})
+
+        # User message với ảnh (multimodal content array)
+        user_content: list = [
+            {
+                "type": "image_url",
+                "image_url": {"url": image_url},
+            }
+        ]
+        # Nếu có text kèm theo ảnh, thêm vào
+        if text_message and text_message.strip():
+            user_content.insert(0, {
+                "type": "text",
+                "text": text_message.strip(),
+            })
+        else:
+            user_content.insert(0, {
+                "type": "text",
+                "text": "Tôi chỉ gửi ảnh, chưa có câu hỏi cụ thể. Hãy mô tả/triage ảnh, đọc nội dung nhìn thấy nếu có, và hỏi tôi muốn hỗ trợ hướng nào tiếp theo.",
+            })
+
+        messages.append({"role": "user", "content": user_content})
+        return messages
+
+    def _is_prescription_in_reply(self, reply: str) -> bool:
+        """Detect nếu AI đã xác định ảnh là đơn thuốc kê đơn → escalate."""
+        prescription_signals = [
+            "đơn thuốc kê đơn", "thuốc kê đơn", "chỉ định của bác sĩ",
+            "gửi đơn thuốc", "dược sĩ của medispace", "đơn thuốc này",
+            "kê đơn", "prescription"
+        ]
+        reply_lower = reply.lower()
+        return any(sig in reply_lower for sig in prescription_signals)
+
+    def _image_classification(self, reply: str, text_message: str = "") -> str:
+        normalized = _normalize_text(f"{reply} {text_message}")
+
+        non_medical_or_unclear = any(term in normalized for term in [
+            "logo", "khong lien quan den y te", "khong phai la noi dung lien quan",
+            "khong phai noi dung lien quan", "khong chua thong tin y te",
+            "khong co thong tin y te", "khong phai la don thuoc",
+        ])
+        if non_medical_or_unclear and not any(term in _normalize_text(text_message) for term in ["don thuoc", "toa thuoc"]):
+            return "image_only_triage"
+
+        prescription_negative = re.search(
+            r"\b(khong|khong phai|khong co|khong chua|khong thay|khong nhan thay)\b.{0,160}\b(don thuoc|toa thuoc|prescription|bac si|benh vien)\b",
+            normalized,
+        )
+        prescription_positive = any(term in normalized for term in [
+            "day la don thuoc", "co ve la don thuoc", "hinh anh la don thuoc",
+            "anh la don thuoc", "don thuoc ke don", "toa thuoc",
+            "thuoc duoc ke", "bac si ke", "prescription image",
+        ])
+        if prescription_positive and not prescription_negative:
+            return "prescription_image_info"
+        if any(term in normalized for term in ["vet thuong", "phat ban", "da lieu", "sung", "mun", "ngua"]):
+            return "image_symptom_triage"
+        if any(term in normalized for term in ["hop thuoc", "nhan thuoc", "san pham", "thanh phan", "hoat chat"]):
+            return "product_image_info"
+        return "image_only_triage"
+
+    def _should_escalate_image_reply(self, reply: str) -> bool:
+        normalized = _normalize_text(reply)
+        urgent_terms = [
+            "cap cuu", "di kham ngay", "gap bac si ngay", "kho tho", "sot cao",
+            "soc phan ve", "sung mat", "sung moi", "chay mau", "tu tu", "nguy hiem"
+        ]
+        return any(term in normalized for term in urgent_terms)
+
+    def _looks_truncated_image_reply(self, reply: str) -> bool:
+        text = (reply or "").strip()
+        if not text:
+            return True
+        tail = text[-160:].strip()
+        if tail in {"*", "**", "-", "•"}:
+            return True
+        if tail.endswith(("*", "**", "-", ":")):
+            return True
+        if tail.count("**") % 2 == 1:
+            return True
+        last_line = tail.splitlines()[-1].strip()
+        if re.fullmatch(r"\d+\.?", last_line):
+            return True
+        normalized_tail = _normalize_text(tail)
+        dangling_phrases = [
+            "minh chi doc", "luu y quan trong", "thong tin cac loai thuoc",
+            "cong dung chung", "lieu dung", "theo anh"
+        ]
+        return any(normalized_tail.endswith(phrase) for phrase in dangling_phrases)
+
+    def _image_suggested_questions(self, classification: str, is_escalated: bool) -> list[str]:
+        if is_escalated:
+            return ["Kết nối Dược sĩ Medispace", "Khi nào cần đi khám ngay?"]
+        if classification == "prescription_image_info":
+            return ["Đọc danh sách thuốc trong đơn", "Giải thích công dụng chung từng thuốc", "Kết nối Dược sĩ kiểm tra đơn"]
+        if classification == "product_image_info":
+            return ["Sản phẩm này dùng để làm gì?", "Có cần đơn thuốc không?", "Tìm sản phẩm này trên Medispace"]
+        if classification == "image_symptom_triage":
+            return ["Khi nào cần đi khám?", "Tôi nên theo dõi dấu hiệu nào?", "Kết nối Dược sĩ"]
+        return ["Bạn muốn mình mô tả kỹ hơn không?", "Gửi lại ảnh rõ hơn", "Kết nối Dược sĩ Medispace"]
+
+    async def _handle_image_request(
+        self,
+        image_url: str,
+        text_message: str,
+        user_id: str,
+        conversation_id: str,
+        history: list = None,
+        context_data: dict = None,
+        streaming: bool = False,
+    ) -> dict:
+        """
+        Non-streaming image pipeline:
+        Gọi LLM với multimodal messages, trả về dict chuẩn.
+        """
+        try:
+            image_payload_url = await normalize_image_for_llm(image_url)
+        except ImageFetchError as exc:
+            return {
+                "reply": str(exc),
+                "classification": "image_only_triage",
+                "is_escalated": False,
+                "products_suggested": [],
+                "suggested_questions": ["Gửi lại ảnh rõ hơn", "Kết nối Dược sĩ Medispace"],
+            }
+
+        messages = self._build_multimodal_messages(image_payload_url, text_message, history)
+
+        endpoint = f"{LLM_BASE}/v1/chat/completions"
+        payload  = {
+            "model":       LLM_MODEL,
+            "messages":    messages,
+            "temperature": 0.30,
+            "max_tokens":  LLM_IMAGE_MAX_TOKENS,
+            "stream":      False,
+        }
+        logger.info("[PharmacyAgent Vision] Gọi LLM với ảnh: %s", image_url[:80])
+
+        raw_reply = ""
+        finish_reason = None
+        for attempt in range(LLM_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, json=payload)
+                    resp.raise_for_status()
+                    data      = resp.json()
+                    choice = data["choices"][0]
+                    finish_reason = choice.get("finish_reason")
+                    raw_reply = choice["message"]["content"]
+                    break
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < LLM_MAX_RETRIES:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                else:
+                    logger.error("[PharmacyAgent Vision] Timeout sau %d lần: %s", LLM_MAX_RETRIES + 1, e)
+                    raise e
+            except Exception as e:
+                logger.error("[PharmacyAgent Vision] LLM Error: %s", e)
+                raise e
+
+        if finish_reason == "length":
+            logger.warning(
+                "[PharmacyAgent Vision] LLM stopped by max_tokens; raw_len=%d max_tokens=%d",
+                len(raw_reply), LLM_IMAGE_MAX_TOKENS,
+            )
+            return {
+                "reply": "Phan hoi phan tich anh bi cat do qua dai. Vui long thu lai hoac hoi theo tung phan cua don thuoc.",
+                "classification": "image_only_triage",
+                "is_escalated": False,
+                "products_suggested": [],
+                "suggested_questions": ["Doc danh sach thuoc trong don", "Giai thich cong dung tung thuoc", "Ket noi Duoc si Medispace"],
+            }
+
+        # Sanitize reply
+        safe_reply, _ = sanitize_response(raw_reply)
+        if self._looks_truncated_image_reply(safe_reply):
+            logger.warning("[PharmacyAgent Vision] Incomplete-looking reply; raw_len=%d", len(raw_reply))
+            return {
+                "reply": "Phan hoi phan tich anh chua hoan tat. Vui long thu lai hoac hoi theo tung phan cua don thuoc.",
+                "classification": "image_only_triage",
+                "is_escalated": False,
+                "products_suggested": [],
+                "suggested_questions": ["Doc danh sach thuoc trong don", "Giai thich cong dung tung thuoc", "Ket noi Duoc si Medispace"],
+            }
+
+        # Đơn thuốc kê đơn → escalate sang dược sĩ thật
+        classification = self._image_classification(safe_reply, text_message)
+        is_escalated = self._should_escalate_image_reply(safe_reply)
+
+        logger.info("[PharmacyAgent Vision] Done. escalated=%s", is_escalated)
+        return {
+            "reply":               safe_reply,
+            "classification":      classification,
+            "is_escalated":        is_escalated,
+            "products_suggested":  [],
+            "suggested_questions": self._image_suggested_questions(classification, is_escalated),
+        }
+
+    async def _stream_image_request(
+        self,
+        image_url: str,
+        text_message: str,
+        user_id: str,
+        conversation_id: str,
+        history: list = None,
+        context_data: dict = None,
+    ):
+        """
+        Streaming image pipeline: yield chunk + done.
+        """
+        try:
+            image_payload_url = await normalize_image_for_llm(image_url)
+        except ImageFetchError as exc:
+            yield json.dumps({
+                "type": "error",
+                "message": str(exc),
+            }, ensure_ascii=False) + "\n"
+            return
+
+        messages = self._build_multimodal_messages(image_payload_url, text_message, history)
+
+        endpoint      = f"{LLM_BASE}/v1/chat/completions"
+        payload       = {
+            "model":       LLM_MODEL,
+            "messages":    messages,
+            "temperature": 0.30,
+            "max_tokens":  LLM_IMAGE_MAX_TOKENS,
+            "stream":      True,
+        }
+        logger.info("[PharmacyAgent Vision Stream] Gọi LLM stream với ảnh: %s", image_url[:80])
+
+        full_raw_reply = ""
+        finish_reason = None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream("POST", endpoint, json=payload) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_lines():
+                        if not chunk.strip():
+                            continue
+                        if chunk.startswith("data: "):
+                            data_str = chunk[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                data_json = json.loads(data_str)
+                                choices   = data_json.get("choices", [])
+                                if choices:
+                                    finish_reason = choices[0].get("finish_reason") or finish_reason
+                                    delta   = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        full_raw_reply += content
+                                        yield json.dumps({
+                                            "type":    "chunk",
+                                            "content": content,
+                                        }, ensure_ascii=False) + "\n"
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.error("[PharmacyAgent Vision Stream] Error: %s", e)
+            yield json.dumps({
+                "type":    "error",
+                "message": f"Lỗi hệ thống khi phân tích ảnh: {str(e)}",
+            }, ensure_ascii=False) + "\n"
+            return
+
+        if finish_reason == "length":
+            logger.warning(
+                "[PharmacyAgent Vision Stream] LLM stopped by max_tokens; raw_len=%d max_tokens=%d",
+                len(full_raw_reply), LLM_IMAGE_MAX_TOKENS,
+            )
+            yield json.dumps({
+                "type": "error",
+                "message": "Phan hoi phan tich anh bi cat do qua dai. Vui long thu lai hoac hoi theo tung phan cua don thuoc.",
+            }, ensure_ascii=False) + "\n"
+            return
+
+        # Post-process
+        safe_reply, _ = sanitize_response(full_raw_reply)
+        if self._looks_truncated_image_reply(safe_reply):
+            logger.warning("[PharmacyAgent Vision Stream] Incomplete-looking reply; raw_len=%d", len(full_raw_reply))
+            yield json.dumps({
+                "type": "error",
+                "message": "Phan hoi phan tich anh chua hoan tat. Vui long thu lai hoac hoi theo tung phan cua don thuoc.",
+            }, ensure_ascii=False) + "\n"
+            return
+        classification = self._image_classification(safe_reply, text_message)
+        is_escalated  = self._should_escalate_image_reply(safe_reply)
+
+        suggested = self._image_suggested_questions(classification, is_escalated)
+        yield json.dumps({
+            "type":                "done",
+            "reply":               safe_reply,
+            "classification":      classification,
+            "is_escalated":        is_escalated,
+            "products_suggested":  [],
+            "suggested_questions": suggested,
+        }, ensure_ascii=False) + "\n"
 
     # ── PUBLIC METHODS ────────────────────────────────────────────────────────
 
@@ -661,33 +1261,63 @@ class PharmacyAgent:
         history: list = None,
         context_products: list = None,
         context_data: dict = None,       # Phase 3: real user data từ BE
+        image_url: str = None,           # Vision: ảnh gửi kèm
     ) -> dict:
         # 1. Pre-filter — phân loại intent
         classification = classify_message(message)
-        logger.info("[PharmacyAgent] Intent: %s", classification)
+        logger.info("[PharmacyAgent] Intent: %s | image=%s", classification, bool(image_url))
+
+        # ── IMAGE PIPELINE ────────────────────────────────────────────────
+        # Nếu có ảnh → dùng pipeline ảnh riêng (multimodal)
+        if image_url:
+            return await self._handle_image_request(
+                image_url=image_url,
+                text_message=message,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                history=history,
+                context_data=context_data,
+                streaming=False,
+            )
 
         # Các intent được xử lý bằng prefilter cứng (không gọi LLM)
         hard_prefilter_map = {
             'too_long':             (TOO_LONG_RESPONSE,       False),
+            'greeting':             (GREETING_RESPONSE,      False),
             'emergency':            (EMERGENCY_RESPONSE,       True),
             'mental_health_crisis': (MENTAL_HEALTH_RESPONSE,  True),
             'prescription_request': (PRESCRIPTION_RESPONSE,   True),
+            'personalized_dosage':  (PERSONALIZED_DOSAGE_RESPONSE, True),
         }
         if classification in hard_prefilter_map:
             reply, escalated = hard_prefilter_map[classification]
             return self._build_prefilter_response(classification, reply, escalated)
 
-        # 2. [Phase 2] RAG enrichment — bổ sung sản phẩm từ Typesense nếu cần
-        enriched_products, rag_source = await self._enrich_context_products(
-            message=message,
-            intent=classification,
-            fe_products=context_products or [],
+        # 2+3. [PARALLEL RAG] Gọi song song: products + articles cùng lúc
+        # Trước: tuần tự ~2-4s (products xong mới gọi articles)
+        # Sau:  song song ~1-2s (cả hai chạy đồng thời, đợi cái chậm nhất)
+        needs_articles = classification in (
+            "general", "drug_info_general", "product_search", "return_request", "coupon_inquiry"
         )
 
-        # 3. [Phase 2+] RAG enrichment — products + articles
-        rag_articles = []
-        if classification in ("general", "product_search"):
-            rag_articles = await search_articles_for_rag(message, limit=2)
+        async def _no_articles() -> list:
+            return []
+
+        (
+            (enriched_products, rag_source),
+            rag_articles,
+        ) = await asyncio.gather(
+            self._enrich_context_products(
+                message=message,
+                intent=classification,
+                fe_products=context_products or [],
+            ),
+            search_articles_for_rag(message) if needs_articles else _no_articles(),
+        )
+        logger.info(
+            "[PharmacyAgent] Parallel RAG done — products=%d articles=%d",
+            len(enriched_products), len(rag_articles),
+        )
 
         rag_context = self._build_rag_context(enriched_products, articles=rag_articles)
         messages    = self._build_messages(
@@ -695,39 +1325,62 @@ class PharmacyAgent:
             context_data=context_data,
         )
 
-        # 4. Call LLM
+        # 4. Call LLM — [FIX-4] với retry exponential backoff
         temperature = self._get_llm_temperature(classification)
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                endpoint = f"{LLM_BASE}/v1/chat/completions"
-                payload  = {
-                    "model":       LLM_MODEL,
-                    "messages":    messages,
-                    "temperature": temperature,
-                    "max_tokens":  LLM_MAX_TOKENS,
-                    "stream":      False,
-                }
-                logger.info(
-                    "[PharmacyAgent] LLM call → intent=%s temp=%.2f rag=%s products=%d context_data=%s",
-                    classification, temperature, rag_source, len(enriched_products),
-                    bool(context_data),
-                )
-                resp = await client.post(endpoint, json=payload)
-                resp.raise_for_status()
-                data      = resp.json()
-                raw_reply = data["choices"][0]["message"]["content"]
-                logger.debug("[PharmacyAgent] Raw reply: %s", raw_reply[:200])
-        except Exception as e:
-            logger.error("[PharmacyAgent] LLM API Error: %s", str(e))
-            raise e
+        endpoint = f"{LLM_BASE}/v1/chat/completions"
+        payload  = {
+            "model":       LLM_MODEL,
+            "messages":    messages,
+            "temperature": temperature,
+            "max_tokens":  LLM_MAX_TOKENS,
+            "stream":      False,
+        }
+        logger.info(
+            "[PharmacyAgent] LLM call → intent=%s temp=%.2f rag=%s products=%d context_data=%s",
+            classification, temperature, rag_source, len(enriched_products),
+            bool(context_data),
+        )
+        raw_reply = ""
+        last_error: Exception | None = None
+        for attempt in range(LLM_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, json=payload)
+                    resp.raise_for_status()
+                    data      = resp.json()
+                    raw_reply = data["choices"][0]["message"]["content"]
+                    logger.debug("[PharmacyAgent] Raw reply: %s", raw_reply[:200])
+                    break  # Thành công → thoát retry loop
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_error = e
+                if attempt < LLM_MAX_RETRIES:
+                    wait_s = 1.5 * (attempt + 1)  # 1.5s, 3.0s
+                    logger.warning(
+                        "[PharmacyAgent] LLM timeout (attempt %d/%d), retry sau %.1fs...",
+                        attempt + 1, LLM_MAX_RETRIES + 1, wait_s
+                    )
+                    await asyncio.sleep(wait_s)
+                else:
+                    logger.error("[PharmacyAgent] LLM timeout sau %d lần thử: %s", LLM_MAX_RETRIES + 1, str(e))
+                    raise e
+            except Exception as e:
+                # Lỗi khác (HTTP 4xx/5xx) → raise ngay, không retry
+                logger.error("[PharmacyAgent] LLM API Error: %s", str(e))
+                raise e
 
         # 5. Post-process
         result = self._process_final_reply(raw_reply, enriched_products)
 
+        # [FIX-1] is_escalated dựa theo intent, KHÔNG phải was_sanitized
+        # was_sanitized=True chỉ nghĩa là reply bị thay fallback — không nhất thiết cần DS
+        # Các intent luôn escalate: emergency, mental_health_crisis, prescription_request
+        ESCALATE_INTENTS = {"emergency", "mental_health_crisis", "prescription_request"}
+        is_escalated = classification in ESCALATE_INTENTS
+
         return {
             "reply":               result["safe_reply"],
             "classification":      classification,
-            "is_escalated":        result["was_sanitized"],
+            "is_escalated":        is_escalated,
             "products_suggested":  result["products_suggested"],
             "suggested_questions": result["suggested_questions"],
         }
@@ -740,16 +1393,33 @@ class PharmacyAgent:
         history: list = None,
         context_products: list = None,
         context_data: dict = None,       # Phase 3: real user data từ BE
+        image_url: str = None,           # Vision: ảnh gửi kèm
     ):
         # 1. Pre-filter
         classification = classify_message(message)
-        logger.info("[PharmacyAgent Stream] Intent: %s", classification)
+        logger.info("[PharmacyAgent Stream] Intent: %s | image=%s", classification, bool(image_url))
+
+        # ── IMAGE PIPELINE (stream mode) ────────────────────────────────
+        if image_url:
+            # Stream: yield chunk + done từ image pipeline
+            async for chunk in self._stream_image_request(
+                image_url=image_url,
+                text_message=message,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                history=history,
+                context_data=context_data,
+            ):
+                yield chunk
+            return
 
         hard_prefilter_map = {
             'too_long':             (TOO_LONG_RESPONSE,       False),
+            'greeting':             (GREETING_RESPONSE,      False),
             'emergency':            (EMERGENCY_RESPONSE,       True),
             'mental_health_crisis': (MENTAL_HEALTH_RESPONSE,  True),
             'prescription_request': (PRESCRIPTION_RESPONSE,   True),
+            'personalized_dosage':  (PERSONALIZED_DOSAGE_RESPONSE, True),
         }
         if classification in hard_prefilter_map:
             reply, escalated = hard_prefilter_map[classification]
@@ -759,18 +1429,29 @@ class PharmacyAgent:
             }, ensure_ascii=False) + "\n"
             return
 
-        # 2. [Phase 2] RAG enrichment — bổ sung sản phẩm từ Typesense nếu cần
-        enriched_products, rag_source = await self._enrich_context_products(
-            message=message,
-            intent=classification,
-            fe_products=context_products or [],
+        # 2+3. [PARALLEL RAG] Gọi song song: products + articles cùng lúc
+        needs_articles = classification in (
+            "general", "drug_info_general", "product_search", "return_request", "coupon_inquiry"
         )
 
+        async def _no_articles() -> list:
+            return []
 
-        # 3. [Phase 2+] RAG enrichment — products + articles
-        rag_articles = []
-        if classification in ("general", "product_search"):
-            rag_articles = await search_articles_for_rag(message, limit=2)
+        (
+            (enriched_products, rag_source),
+            rag_articles,
+        ) = await asyncio.gather(
+            self._enrich_context_products(
+                message=message,
+                intent=classification,
+                fe_products=context_products or [],
+            ),
+            search_articles_for_rag(message) if needs_articles else _no_articles(),
+        )
+        logger.info(
+            "[PharmacyAgent Stream] Parallel RAG done — products=%d articles=%d",
+            len(enriched_products), len(rag_articles),
+        )
 
         rag_context = self._build_rag_context(enriched_products, articles=rag_articles)
         messages    = self._build_messages(
@@ -834,11 +1515,15 @@ class PharmacyAgent:
         logger.info("[PharmacyAgent Stream] Sanitized: %s", result["was_sanitized"])
 
         # 6. Yield final metadata
+        # [FIX-1] is_escalated dựa theo intent (xem respond() để đồng nhất)
+        ESCALATE_INTENTS = {"emergency", "mental_health_crisis", "prescription_request"}
+        is_escalated_stream = classification in ESCALATE_INTENTS
         yield json.dumps({
             "type":               "done",
             "reply":              result["safe_reply"],
             "classification":     classification,
-            "is_escalated":       result["was_sanitized"],
+            "is_escalated":       is_escalated_stream,
             "products_suggested": result["products_suggested"],
             "suggested_questions": result["suggested_questions"],
         }, ensure_ascii=False) + "\n"
+
