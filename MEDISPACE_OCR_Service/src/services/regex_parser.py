@@ -45,6 +45,84 @@ def _clean(match: Optional[re.Match], group: int = 1) -> Optional[str]:
     val = re.split(r'[|\n]', val)[0].strip()
     return val if len(val) > 0 else None
 
+def _ascii_lower(value: str) -> str:
+    """Return lowercase text without Vietnamese accents for OCR-tolerant matching."""
+    text = unicodedata.normalize("NFD", value or "")
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = text.replace("đ", "d").replace("Đ", "D")
+    text = re.sub(r"[^a-zA-Z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+def _canonical_unit(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    key = _ascii_lower(value)
+    compact = key.replace(" ", "")
+    if re.fullmatch(r"vi\s*n|vien|vi.?n|v\s*n", key) or compact in {"vin", "vn"}:
+        return "viên"
+    if re.fullmatch(r"go\s*i|goi|go.?i|g\s*i", key) or compact == "gi":
+        return "gói"
+    if key in {"lo", "l"} or compact in {"lo", "l"}:
+        return "lọ"
+    if re.fullmatch(r"o\s*ng|ong|o.?ng", key) or compact == "ng":
+        return "ống"
+    if re.fullmatch(r"ho\s*p|hop|ho.?p|h\s*p", key) or compact == "hp":
+        return "hộp"
+    if re.fullmatch(r"tu\s*p|tuyp|tu.?p|t\s*p", key) or key == "tube":
+        return "tuýp" if key != "tube" else "tube"
+    if key in {"chai"}:
+        return "chai"
+    if key in {"cai"}:
+        return "cái"
+    return None
+
+def _is_unit_text(value: str) -> bool:
+    return _canonical_unit(value) is not None
+
+def _is_dose_text(value: str) -> bool:
+    key = _ascii_lower(value)
+    compact = key.replace(" ", "")
+    dose_patterns = [
+        r"\bu\s*o?\s*ng\b", r"\bb\s*o?\s*i\b", r"\bxoa\b", r"\bt\s*a?\s*m\b", r"\bg\s*o?\s*i\b", r"\bd\s*u?\s*ng\b", r"\bng\s*a?\s*y\b",
+        r"\bs\s*a?\s*ng\b", r"\btr\s*u?\s*a\b", r"\bch\s*i?\s*eu\b", r"\bt\s*o?\s*i\b", r"\bl\s*a?\s*n\b", r"\btu\s*a?\s*n\b",
+        r"\bsau\s*an\b", r"\btruoc\s*an\b", r"\bcach\s*ng\s*ay\b", r"\bnho\b", r"\bxit\b", r"\bngam\b", r"\bpha\b", r"\bthoa\b",
+    ]
+    dose_tokens = {
+        "uong", "ung", "boi", "xoa", "tam", "goi", "dung", "dng",
+        "ngay", "ngy", "sang", "sng", "trua", "tra", "chieu", "chiu", "toi",
+        "lan", "tuan", "tun", "thoa",
+    }
+    return any(re.search(pattern, key) for pattern in dose_patterns) or any(token in compact for token in dose_tokens)
+
+def _is_stop_text(value: str) -> bool:
+    key = _ascii_lower(value)
+    return key.startswith((
+        "loi dan", "ghi chu", "dan do", "chu y", "luu y", "tai kham", "kham lai",
+        "ngay hen", "bac sy", "bac si", "bs", "cong khoan", "loi khuyen",
+    ))
+
+def _is_item_number_text(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,2}[\.)]?", value.strip()))
+
+def _is_noise_line(value: str) -> bool:
+    key = _ascii_lower(value)
+    return key in {"x", "xx", "sl", "so luong", "don vi", "thuoc", "ten thuoc", "lieu", "lieu dung", "*"}
+
+def _is_probable_med_name(value: str) -> bool:
+    stripped = value.strip(" :-")
+    key = _ascii_lower(stripped)
+    if len(stripped) < 3 or not re.search(r"[A-Za-zÀ-ỹ]", stripped):
+        return False
+    if _is_item_number_text(stripped) or _is_noise_line(stripped) or _is_unit_text(stripped):
+        return False
+    if key.startswith(("sl ", "so luong", "don vi")):
+        return False
+    if _is_dose_text(stripped) or _is_stop_text(stripped):
+        return False
+    if key.startswith(("benh vien", "phong kham", "chan doan", "ho ten", "dia chi", "dien thoai", "ngay")):
+        return False
+    return True
+
 def _is_person_name(s: str) -> bool:
     """Kiểm tra chuỗi có phải họ tên người không."""
     s = s.strip()
@@ -372,6 +450,9 @@ def _extract_medications(text: str) -> List[Dict[str, Any]]:
     """
     medications: List[Dict[str, Any]] = []
     lines = [l.strip() for l in text.split('\n') if l.strip()]
+    separated_items = _extract_numbered_line_medications_v2(lines) or _extract_numbered_line_medications(lines)
+    if separated_items:
+        return separated_items
 
     # ── Patterns ──────────────────────────────────────────────────────────────
 
@@ -496,5 +577,211 @@ def _extract_medications(text: str) -> List[Dict[str, Any]]:
 
     return result
 
+def _extract_numbered_line_medications(lines: List[str]) -> List[Dict[str, Any]]:
+    """Parse common OCR layout where item number, drug name, quantity, unit are split across lines."""
+    units_pattern = re.compile(r"^(vi.?n|go.?i|chai|o.?ng|lo|l.?|tu.?p|tube|ho.?p)$", re.IGNORECASE)
+    stop_pattern = re.compile(
+        r"^(?:lời\s*dặn|loi\s*dan|ghi\s*chú|ghi\s*chu|khám\s*lại|kham\s*lai|ngày\s*hẹn|ngay\s*hen|bác\s*sỹ|bac\s*sy|bác\s*sĩ|bac\s*si)",
+        re.IGNORECASE,
+    )
+    dose_pattern = re.compile(
+        r"(uống|uong|bôi|boi|xoa|tắm|tam|dùng|dung|ngày|ngay|sáng|sang|trưa|trua|chiều|chieu|tối|toi|lần|lan|tuần|tuan|sau\s*ăn|sau\s*an)",
+        re.IGNORECASE,
+    )
+    ignore_name_pattern = re.compile(
+        r"^(?:x|sl|số\s*lượng|so\s*luong|đơn\s*vị|don\s*vi|toa\s*thuốc|don\s*thuốc|đơn\s*thuốc)$",
+        re.IGNORECASE,
+    )
 
+    def is_item_number(value: str) -> bool:
+        return bool(re.fullmatch(r"\d{1,2}[\.)]?", value.strip()))
 
+    def clean_number(value: str) -> Optional[int]:
+        if re.fullmatch(r"\d{1,4}", value.strip()):
+            return int(value.strip())
+        return None
+
+    def is_probable_name(value: str) -> bool:
+        stripped = value.strip()
+        if len(stripped) < 3:
+            return False
+        if is_item_number(stripped) or ignore_name_pattern.match(stripped) or units_pattern.match(stripped):
+            return False
+        if dose_pattern.search(stripped):
+            return False
+        return bool(re.search(r"[A-Za-zÀ-ỹ]", stripped))
+
+    medications: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        if stop_pattern.match(lines[i]):
+            break
+        if not is_item_number(lines[i]):
+            i += 1
+            continue
+
+        j = i + 1
+        while j < len(lines) and lines[j].lower() in {"x", "xx", "*"}:
+            j += 1
+        if j >= len(lines) or not is_probable_name(lines[j]):
+            i += 1
+            continue
+
+        name = lines[j].strip(" :-")
+        med = {
+            "productName": name,
+            "dosage": None,
+            "quantity": None,
+            "unit": None,
+            "instructions": None,
+        }
+
+        k = j + 1
+        while k < len(lines):
+            current = lines[k].strip()
+            next_line = lines[k + 1].strip() if k + 1 < len(lines) else ""
+            if stop_pattern.match(current) or (is_item_number(current) and is_probable_name(next_line)):
+                break
+            if current.lower() in {"x", "xx", "*"}:
+                k += 1
+                continue
+            quantity = clean_number(current)
+            if quantity is not None and med["quantity"] is None:
+                med["quantity"] = quantity
+                k += 1
+                continue
+            if units_pattern.match(current):
+                med["unit"] = current
+                k += 1
+                continue
+            if dose_pattern.search(current):
+                existing = med.get("dosage")
+                med["dosage"] = f"{existing}, {current}" if existing else current
+                med["instructions"] = med["dosage"]
+            k += 1
+
+        if med.get("quantity") is not None or med.get("unit") or med.get("dosage"):
+            medications.append(med)
+        i = k
+
+    return medications if len(medications) >= 1 else []
+
+def _extract_numbered_line_medications_v2(lines: List[str]) -> List[Dict[str, Any]]:
+    """OCR-tolerant parser for numbered prescriptions split across multiple lines.
+
+    Handles layouts like:
+      1 / Drug name / x / 30 / vien / Uong...
+      1. Drug name 30 vien / Uong...
+      1 Drug name / SL: 30 vien / Uong...
+    """
+    medications: List[Dict[str, Any]] = []
+    i = 0
+
+    def clean_number(value: str) -> Optional[int]:
+        match = re.search(r"(?<!\d)(\d{1,4})(?!\d)", value.strip())
+        return int(match.group(1)) if match else None
+
+    def parse_inline_qty_unit(value: str) -> tuple[Optional[int], Optional[str]]:
+        normalized = value.strip()
+        for match in re.finditer(r"(?<!\d)(\d{1,4})\s*([A-Za-zÀ-ỹ?\.]{1,12})(?!\w)", normalized):
+            unit = _canonical_unit(match.group(2))
+            if unit:
+                return int(match.group(1)), unit
+        return None, None
+
+    def parse_inline_header(value: str) -> tuple[Optional[str], Optional[int], Optional[str]]:
+        match = re.match(r"^\s*\d{1,2}[\.)\-\s]+(.+?)\s*$", value)
+        if not match:
+            return None, None, None
+        remainder = match.group(1).strip(" :-")
+        qty, unit = parse_inline_qty_unit(remainder)
+        if qty is not None and unit:
+            remainder = re.sub(r"\s*\d{1,4}\s*[A-Za-zÀ-ỹ?\.]{1,12}\s*$", "", remainder).strip(" :-")
+        return (remainder if _is_probable_med_name(remainder) else None), qty, unit
+
+    while i < len(lines):
+        line = lines[i].strip()
+        if _is_stop_text(line):
+            break
+
+        name: Optional[str] = None
+        quantity: Optional[int] = None
+        unit: Optional[str] = None
+
+        inline_name, inline_qty, inline_unit = parse_inline_header(line)
+        if inline_name:
+            name, quantity, unit = inline_name, inline_qty, inline_unit
+            j = i + 1
+        elif _is_item_number_text(line):
+            j = i + 1
+            while j < len(lines) and _is_noise_line(lines[j]):
+                j += 1
+            if j >= len(lines) or not _is_probable_med_name(lines[j]):
+                i += 1
+                continue
+            name = lines[j].strip(" :-")
+            j += 1
+        else:
+            i += 1
+            continue
+
+        med = {
+            "productName": name,
+            "dosage": None,
+            "quantity": quantity,
+            "unit": unit,
+            "instructions": None,
+        }
+
+        while j < len(lines):
+            current = lines[j].strip()
+            next_line = lines[j + 1].strip() if j + 1 < len(lines) else ""
+            if _is_stop_text(current):
+                break
+            next_inline_name, _, _ = parse_inline_header(current)
+            if next_inline_name:
+                break
+            if _is_item_number_text(current) and _is_probable_med_name(next_line) and not _is_unit_text(next_line):
+                break
+            if _is_noise_line(current):
+                j += 1
+                continue
+
+            inline_qty, inline_unit = parse_inline_qty_unit(current)
+            if inline_qty is not None and inline_unit and med["quantity"] is None:
+                med["quantity"] = inline_qty
+                med["unit"] = inline_unit
+                j += 1
+                continue
+
+            if med["quantity"] is None:
+                standalone_qty = clean_number(current)
+                if standalone_qty is not None and _ascii_lower(current) == str(standalone_qty):
+                    med["quantity"] = standalone_qty
+                    j += 1
+                    continue
+
+            parsed_unit = _canonical_unit(current)
+            if parsed_unit:
+                med["unit"] = parsed_unit
+                j += 1
+                continue
+
+            if _is_dose_text(current):
+                existing = med.get("dosage")
+                med["dosage"] = f"{existing}, {current}" if existing else current
+                med["instructions"] = med["dosage"]
+            j += 1
+
+        if med["productName"] and (med.get("quantity") is not None or med.get("unit") or med.get("dosage")):
+            medications.append(med)
+        i = j
+
+    seen: set[str] = set()
+    deduped: List[Dict[str, Any]] = []
+    for med in medications:
+        key = _ascii_lower(str(med.get("productName") or ""))[:40]
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(med)
+    return deduped

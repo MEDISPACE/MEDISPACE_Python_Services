@@ -51,6 +51,6 @@ RUN mkdir -p /app/logs /root/.paddleocr /root/.cache/vietocr
 EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=120s \
-    CMD curl -f http://localhost:8001/health || exit 1
+    CMD curl -f http://localhost:8002/health || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

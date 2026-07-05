@@ -1,0 +1,7 @@
+conflict_rate,elapsed_seconds,field_diagnosis_match,field_doctorName_match,field_hospitalName_match,field_patientAge_match,field_patientGender_match,field_patientName_match,field_prescriptionDate_match,filename,med_count_match,med_name_score,med_qty_score,med_unit_score,message,mode,quality_level,quality_score,repeat,success,traditional_seconds,vision_seconds,vision_timed_out
+0,41.459,False,False,False,False,False,False,False,Donthuoc.jpg,False,0.0,0.0,0.0,Prescription extraction failed,vision,low,10,1,False,,39.5,False
+0,26.445,False,True,True,True,True,,True,Donthuoc4.jpg,True,0.5,0.5,0.5,Prescription extracted successfully,vision,medium,81,1,True,,26.19,False
+0,34.172,False,,False,False,,False,,Donthuoc5.jpg,False,0.0,0.0,0.0,Prescription extraction failed,vision,low,10,1,False,,34.14,False
+0,32.871,True,True,True,True,True,True,True,Donthuoc6.jpg,True,0.167,0.0,0.0,Prescription extracted successfully,vision,medium,82,1,True,,32.83,False
+0,34.726,False,False,False,,,,False,Donthuoc7.jpg,False,0.0,0.0,0.0,Prescription extraction failed,vision,low,10,1,False,,34.62,False
+0,34.529,False,,,,,,False,Donthuoc8.jpg,False,0.0,0.0,0.0,Prescription extraction failed,vision,low,10,1,False,,34.49,False

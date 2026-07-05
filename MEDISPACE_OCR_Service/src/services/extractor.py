@@ -63,7 +63,7 @@ Lưu ý quan trọng:
 - confidence: "high" nếu thông tin rõ ràng, "medium" nếu còn chỗ mờ nhạt, "low" nếu chữ viết tay khó đọc"""
 
 
-def extract_prescription_info(raw_text: str) -> dict:
+def extract_prescription_info(raw_text: str, allow_llm_fallback: bool = True) -> dict:
     """
     Trích xuất thông tin có cấu trúc — Hybrid Strategy:
       3A: Regex trước (nhanh, offline)
@@ -94,6 +94,14 @@ def extract_prescription_info(raw_text: str) -> dict:
         return regex_result
 
     print(f"[Extractor] ⚠ Regex thiếu (medications={has_medications}, score={regex_score}/10)")
+    if not allow_llm_fallback:
+        regex_result["confidence"] = "medium" if has_medications else "low"
+        regex_result["_extraction_method"] = "regex_only_no_llm_fallback"
+        if not has_medications:
+            regex_result["error"] = "Regex extraction incomplete and LLM fallback disabled"
+        print("[Extractor] LLM fallback disabled for this OCR mode; returning regex result.")
+        return regex_result
+
     print("[Extractor] Bước 3B: Gọi Custom LLM API bổ sung...")
 
     # === Bước 3B: Custom LLM API ===

@@ -1,0 +1,33 @@
+{
+  "modes": [
+    "parallel"
+  ],
+  "repeats": 1,
+  "rows": [
+    {
+      "mode": "parallel",
+      "filename": "Donthuoc4.jpg",
+      "repeat": 1,
+      "elapsed_seconds": 49.878,
+      "success": true,
+      "message": "Prescription extracted successfully",
+      "quality_score": 88,
+      "quality_level": "high",
+      "conflict_rate": 0,
+      "vision_timed_out": false,
+      "traditional_seconds": 49.79,
+      "vision_seconds": null,
+      "field_patientName_match": null,
+      "field_patientAge_match": false,
+      "field_patientGender_match": false,
+      "field_doctorName_match": true,
+      "field_hospitalName_match": true,
+      "field_prescriptionDate_match": true,
+      "field_diagnosis_match": true,
+      "med_count_match": true,
+      "med_name_score": 0.5,
+      "med_qty_score": 0.5,
+      "med_unit_score": 0.5
+    }
+  ]
+}
