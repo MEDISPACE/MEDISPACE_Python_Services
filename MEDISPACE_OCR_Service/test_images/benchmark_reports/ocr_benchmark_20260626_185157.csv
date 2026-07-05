@@ -1,0 +1,2 @@
+conflict_rate,elapsed_seconds,field_diagnosis_match,field_doctorName_match,field_hospitalName_match,field_patientAge_match,field_patientGender_match,field_patientName_match,field_prescriptionDate_match,filename,med_count_match,med_name_score,med_qty_score,med_unit_score,message,mode,quality_level,quality_score,repeat,success,traditional_seconds,vision_seconds,vision_timed_out
+0,28.859,True,True,True,True,True,,True,Donthuoc4.jpg,True,0.5,0.5,0.5,Prescription extracted successfully,vision,medium,81,1,True,,28.81,False

@@ -1,0 +1,28 @@
+.git
+.gitignore
+.dockerignore
+
+# Local environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# Runtime outputs
+logs/
+*.log
+
+# Benchmark/test assets are mounted/read from host, not needed in the image
+test_images/
+
+# Editor/local metadata
+.vscode/
+.idea/
+*.swp
+
+# Local env files are provided through docker compose env_file
+.env

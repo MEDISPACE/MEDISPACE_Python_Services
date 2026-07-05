@@ -1,5 +1,5 @@
 {
-  "description": "Ground truth cho benchmark OCR pipeline. Mỗi entry gồm filename ảnh và kết quả chuẩn.",
+  "description": "Ground truth for MEDISPACE prescription OCR benchmark. Fields with null expected values are skipped by the benchmark accuracy check.",
   "images": [
     {
       "filename": "Donthuoc.jpg",
@@ -8,13 +8,13 @@
         "patientAge": "49",
         "patientGender": "male",
         "doctorName": "Nguyễn Văn Hùng",
-        "hospitalName": "Bệnh Viện Bình Dân",
+        "hospitalName": "Bệnh viện Bình Dân",
         "prescriptionDate": "2014-09-25",
         "diagnosis": "Viêm dạ dày cấp khác",
         "medications_count": 6,
         "medications": [
           {
-            "productName": "YESOM 40",
+            "productName": "YESOM 40 40mg",
             "quantity": 63,
             "unit": "Viên"
           },
@@ -34,7 +34,7 @@
             "unit": "Viên"
           },
           {
-            "productName": "BIOCID MH 3.5",
+            "productName": "BIOCID MH 3.5+2g",
             "quantity": 21,
             "unit": "Chai"
           },
@@ -42,6 +42,391 @@
             "productName": "DIGLUMISAN",
             "quantity": 63,
             "unit": "Ống"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc2.jpg",
+      "ground_truth": {
+        "patientName": "Lê Thanh Tâm",
+        "patientAge": "47",
+        "patientGender": null,
+        "doctorName": null,
+        "hospitalName": "Bệnh viện Medic Miền Đông",
+        "prescriptionDate": null,
+        "diagnosis": "Tổn thương nông tại hang và đại xuất huyết dưới da vùng mông đùi trái sau bị đánh",
+        "medications_count": 2,
+        "medications": [
+          {
+            "productName": "Paracetamol Hapacol 250 250mg",
+            "quantity": 10,
+            "unit": "Gói"
+          },
+          {
+            "productName": "Vitamin C 500mg",
+            "quantity": 10,
+            "unit": "Viên"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc3.jpg",
+      "ground_truth": {
+        "patientName": "Trần Nam Vân Hoàng",
+        "patientAge": "3 tuổi 2 tháng",
+        "patientGender": "male",
+        "doctorName": "Chí Định",
+        "hospitalName": "Phòng khám nội BS.CKI Đinh Chí",
+        "prescriptionDate": "2024-01-16",
+        "diagnosis": "J02 - Viêm họng cấp",
+        "medications_count": 3,
+        "medications": [
+          {
+            "productName": "ACEMUC 100 mg",
+            "quantity": 6,
+            "unit": "Gói"
+          },
+          {
+            "productName": "PROPRANOLOL 40 mg",
+            "quantity": 3,
+            "unit": "Viên"
+          },
+          {
+            "productName": "AUMGMENTIN 320MG",
+            "quantity": 6,
+            "unit": "Viên"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc4.jpg",
+      "ground_truth": {
+        "patientName": null,
+        "patientAge": "24",
+        "patientGender": "male",
+        "doctorName": "Lê Thị Hoa",
+        "hospitalName": "Trung tâm Y tế quận Sơn Trà",
+        "prescriptionDate": "2020-02-18",
+        "diagnosis": "Thấp không ảnh hưởng đến tim",
+        "medications_count": 2,
+        "medications": [
+          {
+            "productName": "Penicilin Phenoxymethylpenicilin Kali 400.000 UI",
+            "quantity": 30,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Paracetamol 500mg Mypara 500",
+            "quantity": 10,
+            "unit": "Viên"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc5.jpg",
+      "ground_truth": {
+        "patientName": "Nguyễn Thị Lợi",
+        "patientAge": "60",
+        "patientGender": null,
+        "doctorName": null,
+        "hospitalName": "Viện Y Dược Học Dân Tộc",
+        "prescriptionDate": null,
+        "diagnosis": "HCTK TOA / TVDD",
+        "medications_count": 7,
+        "medications": [
+          {
+            "productName": "Secotlac Shunora 200mg",
+            "quantity": 60,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Độc hoạt TKS viên",
+            "quantity": 2,
+            "unit": "Hộp"
+          },
+          {
+            "productName": "Đại tần giao",
+            "quantity": 2,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Rheumatin",
+            "quantity": 3,
+            "unit": "Chai"
+          },
+          {
+            "productName": "Ginkobil",
+            "quantity": 90,
+            "unit": "Viên"
+          },
+          {
+            "productName": "JEX",
+            "quantity": 2,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Cồn xoa bóp Viện",
+            "quantity": 1,
+            "unit": "Chai"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc6.jpg",
+      "ground_truth": {
+        "patientName": "Nguyễn Đình Xuyên",
+        "patientAge": "72",
+        "patientGender": "male",
+        "doctorName": "Nguyễn Công Quyền",
+        "hospitalName": "Bệnh viện Đa khoa tỉnh Hà Tĩnh",
+        "prescriptionDate": "2016-11-16",
+        "diagnosis": "Bệnh đái tháo đường type 2",
+        "medications_count": 6,
+        "medications": [
+          {
+            "productName": "Scilin M30 40UI/ml x 10ml",
+            "quantity": 3,
+            "unit": "Lọ"
+          },
+          {
+            "productName": "Metformin INDFORM 500mg",
+            "quantity": 90,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Gibio 100mg 75mg 5,25mg",
+            "quantity": 60,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Meloxicam 7.5mg",
+            "quantity": 20,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Rhomatic Gel 18.5g 1%",
+            "quantity": 1,
+            "unit": "Tuýp"
+          },
+          {
+            "productName": "Bơm Tiêm Nhựa 1ml",
+            "quantity": 60,
+            "unit": "Cái"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc7.jpg",
+      "ground_truth": {
+        "patientName": null,
+        "patientAge": null,
+        "patientGender": null,
+        "doctorName": "Nguyễn Minh Long",
+        "hospitalName": "Bệnh viện Xây Dựng",
+        "prescriptionDate": "2018-11-29",
+        "diagnosis": "Eczema phản ứng giai đoạn cấp tính",
+        "medications_count": 7,
+        "medications": [
+          {
+            "productName": "Ducray Kelual DS",
+            "quantity": 1,
+            "unit": "Lọ"
+          },
+          {
+            "productName": "Silkron",
+            "quantity": 3,
+            "unit": "Tube"
+          },
+          {
+            "productName": "EMOLEUM LIPID BALM",
+            "quantity": 1,
+            "unit": "Tube"
+          },
+          {
+            "productName": "Halcort 6",
+            "quantity": 30,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Destidin 5mg",
+            "quantity": 30,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Mardekin",
+            "quantity": 1,
+            "unit": "Hộp"
+          },
+          {
+            "productName": "HB DIGIC",
+            "quantity": 60,
+            "unit": "Viên"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc8.jpg",
+      "ground_truth": {
+        "patientName": null,
+        "patientAge": null,
+        "patientGender": null,
+        "doctorName": null,
+        "hospitalName": null,
+        "prescriptionDate": "2017-07-24",
+        "diagnosis": "Viêm da, trứng cá bọc",
+        "medications_count": 8,
+        "medications": [
+          {
+            "productName": "Lalise Cleanser SRM Da Dầu 100g",
+            "quantity": 1,
+            "unit": "Tube"
+          },
+          {
+            "productName": "Genfluid",
+            "quantity": 1,
+            "unit": "Lọ"
+          },
+          {
+            "productName": "OSAINE SPF50",
+            "quantity": 1,
+            "unit": "Tuýp"
+          },
+          {
+            "productName": "GEL DESPIGMENTANTE 15ml",
+            "quantity": 1,
+            "unit": "Tuýp"
+          },
+          {
+            "productName": "KTV",
+            "quantity": 1,
+            "unit": "Lọ"
+          },
+          {
+            "productName": "Halox",
+            "quantity": 1,
+            "unit": "Tube"
+          },
+          {
+            "productName": "UPHAXIME cefixim 200MG",
+            "quantity": 20,
+            "unit": "Viên"
+          },
+          {
+            "productName": "THYANTI isotretinoin 10mg",
+            "quantity": 30,
+            "unit": "Viên"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc9.jpg",
+      "ground_truth": {
+        "patientName": null,
+        "patientAge": null,
+        "patientGender": null,
+        "doctorName": null,
+        "hospitalName": null,
+        "prescriptionDate": "2020-10-29",
+        "diagnosis": "Rối loạn TK thực vật",
+        "medications_count": 4,
+        "medications": [
+          {
+            "productName": "Citicolin 0,2g",
+            "quantity": 30,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Prupofane 0,5g",
+            "quantity": 30,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Cerebral 0,1g",
+            "quantity": 30,
+            "unit": "Viên"
+          },
+          {
+            "productName": "Agi glycin 0,3g",
+            "quantity": 30,
+            "unit": "Viên"
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc10.jpg",
+      "ground_truth": {
+        "patientName": null,
+        "patientAge": "86",
+        "patientGender": "male",
+        "doctorName": null,
+        "hospitalName": "Bệnh viện Bệnh Nhiệt Đới Trung Ương",
+        "prescriptionDate": "2022-05-31",
+        "diagnosis": null,
+        "medications_count": 3,
+        "medications": [
+          {
+            "productName": "Bdex beads 80mg",
+            "quantity": null,
+            "unit": null
+          },
+          {
+            "productName": "Keransian",
+            "quantity": null,
+            "unit": null
+          },
+          {
+            "productName": "Tebcerol 500mg",
+            "quantity": null,
+            "unit": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "Donthuoc11.jpg",
+      "ground_truth": {
+        "patientName": null,
+        "patientAge": null,
+        "patientGender": null,
+        "doctorName": null,
+        "hospitalName": null,
+        "prescriptionDate": null,
+        "diagnosis": "Viêm phế quản",
+        "medications_count": 5,
+        "medications": [
+          {
+            "productName": "Sumakin 750mg",
+            "quantity": null,
+            "unit": null
+          },
+          {
+            "productName": "Thymomod",
+            "quantity": null,
+            "unit": null
+          },
+          {
+            "productName": "Metlive 16mg",
+            "quantity": null,
+            "unit": null
+          },
+          {
+            "productName": "Esonic 20mg",
+            "quantity": null,
+            "unit": null
+          },
+          {
+            "productName": "Ecomuc",
+            "quantity": null,
+            "unit": null
           }
         ]
       }
