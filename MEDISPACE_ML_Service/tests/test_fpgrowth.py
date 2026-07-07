@@ -66,6 +66,12 @@ class TestGetAssociated:
         assert "p2" in results
 
     @pytest.mark.asyncio
+    async def test_associated_scored_returns_rule_score(self, trained_model):
+        results = await trained_model.get_associated_scored("p1", limit=5)
+        assert results[0]["productId"]
+        assert results[0]["score"] > 0
+
+    @pytest.mark.asyncio
     async def test_excludes_self(self, trained_model):
         results = await trained_model.get_associated("p1", limit=10)
         assert "p1" not in results

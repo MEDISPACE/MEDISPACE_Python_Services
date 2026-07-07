@@ -114,3 +114,20 @@ class FPGrowthRecommender:
                 break
 
         return unique_results
+
+    async def get_associated_scored(self, product_id: str, limit: int = 6) -> List[Dict]:
+        """Return associated products with lift * confidence scores."""
+        if not self.is_trained or product_id not in self.rules_dict:
+            return []
+
+        results = self.rules_dict[product_id]
+        seen = set()
+        unique_results = []
+        for pid, score in results:
+            if pid != product_id and pid not in seen:
+                seen.add(pid)
+                unique_results.append({"productId": pid, "score": round(float(score), 6)})
+            if len(unique_results) >= limit:
+                break
+
+        return unique_results

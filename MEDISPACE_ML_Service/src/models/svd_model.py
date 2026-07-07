@@ -134,3 +134,33 @@ class SVDRecommender:
                 break
 
         return recommendations, "svd"
+
+    async def get_for_user_scored(self, user_id: str, limit: int = 12) -> Tuple[List[Dict], str]:
+        """Return personalized recommendations with raw SVD predicted scores."""
+        if not self.is_trained or self.predicted_matrix is None:
+            return [], "svd_not_ready"
+
+        if user_id not in self.user_index:
+            return [], "svd_user_not_found"
+
+        user_idx = self.user_index[user_id]
+        user_predictions = self.predicted_matrix[user_idx]
+
+        already_interacted = set()
+        if self.user_product_df is not None:
+            interacted = self.user_product_df[
+                self.user_product_df['user_id'] == user_id
+            ]['product_id'].tolist()
+            already_interacted = set(interacted)
+
+        sorted_indices = np.argsort(user_predictions)[::-1]
+
+        recommendations = []
+        for idx in sorted_indices:
+            pid = self.index_product.get(idx)
+            if pid and pid not in already_interacted:
+                recommendations.append({"productId": pid, "score": round(float(user_predictions[idx]), 6)})
+            if len(recommendations) >= limit:
+                break
+
+        return recommendations, "svd"

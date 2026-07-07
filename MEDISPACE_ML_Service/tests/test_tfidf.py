@@ -48,6 +48,13 @@ class TestGetRelated:
         assert len(results) > 0
 
     @pytest.mark.asyncio
+    async def test_related_scored_returns_cosine_score(self, model):
+        results = await model.get_related_scored("p1", limit=3)
+        assert isinstance(results, list)
+        assert results[0]["productId"]
+        assert 0 < results[0]["score"] <= 1
+
+    @pytest.mark.asyncio
     async def test_excludes_self(self, model):
         results = await model.get_related("p1", limit=10)
         assert "p1" not in results

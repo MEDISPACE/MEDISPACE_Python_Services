@@ -157,9 +157,26 @@ class NMFTrendingRecommender:
 
         return self.global_trending[:limit]
 
+    async def get_trending_scored(self, category_id: Optional[str] = None, limit: int = 12) -> List[Dict]:
+        """Return trending products with final NMF/rating scores."""
+        if not self.is_trained or self.trending_scores.empty:
+            return []
+
+        scores = self.trending_scores
+        if category_id:
+            scores = scores[scores['category_id'] == category_id]
+
+        return [
+            {"productId": str(row['product_id']), "score": round(float(row['final_score']), 6)}
+            for _, row in scores.head(limit).iterrows()
+        ]
+
     async def get_for_new_user(self, limit: int = 12) -> List[str]:
         """Cold-start: global trending cho user moi"""
         return await self.get_trending(limit=limit)
+
+    async def get_for_new_user_scored(self, limit: int = 12) -> List[Dict]:
+        return await self.get_trending_scored(limit=limit)
 
     async def get_filtered_by_categories(self, category_ids: List[str], limit: int = 12) -> List[str]:
         """Trending filtered theo nhieu categories (cho personalized fallback)"""
@@ -175,3 +192,17 @@ class NMFTrendingRecommender:
                     candidates.append(pid)
 
         return candidates[:limit] if candidates else self.global_trending[:limit]
+
+    async def get_filtered_by_categories_scored(self, category_ids: List[str], limit: int = 12) -> List[Dict]:
+        if not self.is_trained or self.trending_scores.empty:
+            return []
+        if not category_ids:
+            return await self.get_for_new_user_scored(limit)
+
+        scores = self.trending_scores[self.trending_scores['category_id'].isin(category_ids)]
+        if scores.empty:
+            scores = self.trending_scores
+        return [
+            {"productId": str(row['product_id']), "score": round(float(row['final_score']), 6)}
+            for _, row in scores.head(limit).iterrows()
+        ]

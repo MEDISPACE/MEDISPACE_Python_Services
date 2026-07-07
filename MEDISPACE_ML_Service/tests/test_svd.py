@@ -57,6 +57,15 @@ class TestGetRecommendations:
         assert len(recs) > 0
 
     @pytest.mark.asyncio
+    async def test_returns_scored_results_for_known_user(self, trained_svd):
+        recs, algo = await trained_svd.get_for_user_scored("user0", 5)
+        assert algo == "svd"
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+        assert recs[0]["productId"]
+        assert isinstance(recs[0]["score"], float)
+
+    @pytest.mark.asyncio
     async def test_unknown_user_returns_empty(self, trained_svd):
         result = await trained_svd.get_for_user("user_not_exist", 5)
         recs = result[0] if isinstance(result, tuple) else result

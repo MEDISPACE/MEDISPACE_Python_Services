@@ -150,17 +150,30 @@ class PostPurchaseRequest(BaseModel):
 class InvalidateUserRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
 
-def recommendation_items(product_ids: list[str], reason: str, evidence: list[str] | None = None):
-    total = max(len(product_ids), 1)
-    return [
-        {
-            "productId": product_id,
-            "score": round(max(0.0, 1.0 - index / total), 6),
-            "reason": reason,
-            "evidence": evidence or [],
-        }
-        for index, product_id in enumerate(product_ids)
-    ]
+def recommendation_items(products: list, reason: str, evidence: list[str] | None = None):
+    """Normalize model output while preserving model-native scores."""
+    total = max(len(products), 1)
+    items = []
+    for index, product in enumerate(products):
+        if isinstance(product, dict):
+            product_id = product.get("productId") or product.get("product_id")
+            score = product.get("score")
+            item_reason = product.get("reason", reason)
+            item_evidence = product.get("evidence", evidence or [])
+        else:
+            product_id = product
+            score = max(0.0, 1.0 - index / total)
+            item_reason = reason
+            item_evidence = evidence or []
+        if not product_id:
+            continue
+        items.append({
+            "productId": str(product_id),
+            "score": round(float(score), 6) if isinstance(score, (int, float)) else round(max(0.0, 1.0 - index / total), 6),
+            "reason": item_reason,
+            "evidence": item_evidence,
+        })
+    return items
 
 def response(algorithm: str, product_ids: list[str], reason: str, source: str = "computed", evidence: list[str] | None = None):
     return {
@@ -251,10 +264,10 @@ async def get_related(
         return response("tfidf_mmr" if diverse else "tfidf", cached, "Tương đồng nội dung sản phẩm", "cache", ["catalog_content"])
 
     if diverse:
-        results = await hybrid_engine.tfidf.get_related_diverse(product_id, limit=limit, lambda_mmr=lambda_mmr)
+        results = await hybrid_engine.tfidf.get_related_diverse_scored(product_id, limit=limit, lambda_mmr=lambda_mmr)
         algo = "tfidf_mmr"
     else:
-        results = await hybrid_engine.tfidf.get_related(product_id, limit=limit)
+        results = await hybrid_engine.tfidf.get_related_scored(product_id, limit=limit)
         algo = "tfidf"
 
     await cache.set(cache_key, results, ttl_hours=24)
@@ -269,10 +282,10 @@ async def get_bought_together(product_id: str, limit: int = Query(default=6, ge=
     if cached:
         return response("fpgrowth", cached, "Thường xuất hiện cùng nhau trong đơn đã giao", "cache", ["delivered_orders"])
 
-    results = await hybrid_engine.fpgrowth.get_associated(product_id, limit)
+    results = await hybrid_engine.fpgrowth.get_associated_scored(product_id, limit)
     if not results:
         # Fallback to TF-IDF MMR if no FP-Growth rules found
-        results = await hybrid_engine.tfidf.get_related_diverse(product_id, limit=limit, lambda_mmr=0.6)
+        results = await hybrid_engine.tfidf.get_related_diverse_scored(product_id, limit=limit, lambda_mmr=0.6)
         await cache.set(cache_key, results, ttl_hours=6)
         return response("tfidf_mmr_fallback", results, "Sản phẩm liên quan dùng khi chưa đủ lịch sử mua kèm", evidence=["catalog_content"])
 
@@ -288,13 +301,13 @@ async def get_trending(category_id: str = None, limit: int = Query(default=12, g
     if cached:
         return response("nmf", cached, "Sản phẩm nổi bật dựa trên tương tác và đánh giá", "cache", ["interactions", "ratings"])
 
-    results = await hybrid_engine.nmf.get_trending(category_id, limit)
+    results = await hybrid_engine.nmf.get_trending_scored(category_id, limit)
     await cache.set(key, results, ttl_hours=2)
     return response("nmf", results, "Sản phẩm nổi bật dựa trên tương tác và đánh giá", evidence=["interactions", "ratings"])
 
 @app.get("/recommend/popular", dependencies=[Depends(require_service_token)])
 async def get_popular(category_id: str = None, limit: int = Query(default=12, ge=1, le=60)):
-    results = await hybrid_engine.nmf.get_trending(category_id, limit)
+    results = await hybrid_engine.nmf.get_trending_scored(category_id, limit)
     return response("popular", results, "Phổ biến trong dữ liệu giao dịch và tương tác", evidence=["delivered_orders", "interactions"])
 
 
@@ -306,7 +319,7 @@ async def get_for_you(user_id: str, limit: int = Query(default=12, ge=1, le=60))
     if cached:
         return response(cached.get("algorithm"), cached.get("products"), "Phù hợp với lịch sử và sở thích gần đây", "cache", ["user_interactions"])
 
-    results, algorithm = await hybrid_engine.get_personalized(user_id, limit)
+    results, algorithm = await hybrid_engine.get_personalized_scored(user_id, limit)
     await cache.set(cache_key, {"algorithm": algorithm, "products": results}, ttl_hours=3)
     return response(algorithm, results, "Phù hợp với lịch sử và sở thích gần đây", evidence=["user_interactions"])
 
@@ -314,14 +327,14 @@ async def get_for_you(user_id: str, limit: int = Query(default=12, ge=1, le=60))
 @app.post("/recommend/post-purchase", dependencies=[Depends(require_service_token)])
 async def get_post_purchase(payload: PostPurchaseRequest):
     """Hybrid: Gợi ý sau khi đặt hàng (FP-Growth + TF-IDF MMR)"""
-    results = await hybrid_engine.get_post_purchase(payload.product_ids, payload.limit)
+    results = await hybrid_engine.get_post_purchase_scored(payload.product_ids, payload.limit)
     return response("hybrid", results, "Bổ trợ cho các sản phẩm vừa mua", evidence=["delivered_orders", "catalog_content"])
 
 
 @app.post("/recommend/pharmacist", dependencies=[Depends(require_service_token)])
 async def get_pharmacist_suggestions(payload: PharmacistRecommendationRequest):
     """TF-IDF Medical Context: Gợi ý cho pharmacist — với chronic disease boost & allergy filter"""
-    results = await hybrid_engine.get_pharmacist_suggestions(
+    results = await hybrid_engine.get_pharmacist_suggestions_scored(
         chronic_diseases=payload.chronic_diseases,
         allergies=payload.allergies,
         current_medications=payload.current_medications,

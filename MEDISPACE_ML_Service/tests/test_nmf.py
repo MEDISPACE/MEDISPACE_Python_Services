@@ -66,6 +66,13 @@ class TestGetTrending:
         assert len(results) > 0
 
     @pytest.mark.asyncio
+    async def test_trending_scored_returns_final_score(self, trained_nmf):
+        results = await trained_nmf.get_trending_scored(category_id=None, limit=5)
+        assert isinstance(results, list)
+        assert results[0]["productId"]
+        assert results[0]["score"] >= 0
+
+    @pytest.mark.asyncio
     async def test_excludes_out_of_stock(self, trained_nmf):
         results = await trained_nmf.get_trending(limit=10)
         assert "p4" not in results, "OOS product should not appear in trending"

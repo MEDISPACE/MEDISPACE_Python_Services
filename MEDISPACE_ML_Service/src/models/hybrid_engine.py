@@ -167,6 +167,30 @@ class HybridEngine:
         results = await self.nmf.get_for_new_user(limit * 3)
         return visible(results), "nmf_trending"
 
+    async def get_personalized_scored(self, user_id: str, limit: int = 12) -> Tuple[List[Dict], str]:
+        """Personalized recommendations with model-native scores."""
+        feedback = await asyncio.to_thread(runtime_loader.get_user_feedback_exclusions, user_id)
+        excluded = feedback["dismissed"] | feedback["snoozed"]
+
+        def visible(values: List[Dict]) -> List[Dict]:
+            return [value for value in values if value.get("productId") not in excluded][:limit]
+
+        if self.svd.can_predict_for_user(user_id):
+            results, algo = await self.svd.get_for_user_scored(user_id, limit * 3)
+            filtered = visible(results)
+            if filtered:
+                return filtered, algo
+
+        top_categories = await asyncio.to_thread(runtime_loader.get_user_top_categories, user_id)
+        if top_categories:
+            results = await self.nmf.get_filtered_by_categories_scored(top_categories, limit * 3)
+            filtered = visible(results)
+            if filtered:
+                return filtered, "nmf_personalized"
+
+        results = await self.nmf.get_for_new_user_scored(limit * 3)
+        return visible(results), "nmf_trending"
+
     async def get_post_purchase(self, order_product_ids: List[str], limit: int = 8) -> List[str]:
         """
         Gợi ý sau khi đặt hàng.
@@ -191,6 +215,34 @@ class HybridEngine:
                     if r not in seen:
                         seen.add(r)
                         results.append(r)
+                    if len(results) >= limit:
+                        break
+                if len(results) >= limit:
+                    break
+
+        return results[:limit]
+
+    async def get_post_purchase_scored(self, order_product_ids: List[str], limit: int = 8) -> List[Dict]:
+        """Post-purchase recommendations with FP/TF-IDF native scores."""
+        seen = set(order_product_ids)
+        results: List[Dict] = []
+
+        for pid in order_product_ids:
+            associated = await self.fpgrowth.get_associated_scored(pid, limit=4)
+            for item in associated:
+                product_id = item.get("productId")
+                if product_id and product_id not in seen:
+                    seen.add(product_id)
+                    results.append(item)
+
+        if len(results) < limit:
+            for pid in order_product_ids:
+                related = await self.tfidf.get_related_diverse_scored(pid, limit=6, lambda_mmr=0.65)
+                for item in related:
+                    product_id = item.get("productId")
+                    if product_id and product_id not in seen:
+                        seen.add(product_id)
+                        results.append(item)
                     if len(results) >= limit:
                         break
                 if len(results) >= limit:
@@ -320,6 +372,22 @@ class HybridEngine:
         Dung TF-IDF medical context tu tfidf_model.
         """
         return await self.tfidf.get_pharmacist_suggestions(
+            chronic_diseases=chronic_diseases,
+            allergies=allergies,
+            current_medications=current_medications,
+            prescription_product_ids=prescription_product_ids,
+            limit=limit
+        )
+
+    async def get_pharmacist_suggestions_scored(
+        self,
+        chronic_diseases: List[str],
+        allergies: List[str],
+        current_medications: List[str],
+        prescription_product_ids: List[str],
+        limit: int = 10
+    ) -> List[Dict]:
+        return await self.tfidf.get_pharmacist_suggestions_scored(
             chronic_diseases=chronic_diseases,
             allergies=allergies,
             current_medications=current_medications,

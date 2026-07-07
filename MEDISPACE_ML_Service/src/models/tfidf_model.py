@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 SAVED_MODELS_DIR = os.path.join(os.path.dirname(__file__), "../../saved_models")
 
@@ -182,6 +182,55 @@ class TFIDFRecommender:
         top_indices = np.argsort(sim_scores)[::-1][:limit]
         return [self.index_product[i] for i in top_indices if sim_scores[i] > 0]
 
+    async def get_related_scored(
+        self,
+        product_id: str,
+        limit: int = 8,
+        exclude_prescription_mismatch: bool = True,
+        exclude_prescription: bool = True
+    ) -> List[Dict]:
+        """Return related products with true cosine similarity scores."""
+        if not self.is_trained or self.tfidf_matrix is None:
+            return []
+
+        idx = self.product_index.get(product_id)
+        if idx is None:
+            return []
+
+        product_vec = self.tfidf_matrix[idx]
+        sim_scores = cosine_similarity(product_vec, self.tfidf_matrix).flatten()
+        sim_scores[idx] = 0
+
+        if self.products_df is not None:
+            out_of_stock = self.products_df[self.products_df["stockQuantity"] <= 0]["_id"].tolist()
+            for oos_id in out_of_stock:
+                oos_idx = self.product_index.get(oos_id)
+                if oos_idx is not None:
+                    sim_scores[oos_idx] = 0
+
+            if exclude_prescription:
+                prescription_mask = self.products_df["requiresPrescription"].fillna(False).astype(bool)
+                prescription_ids = self.products_df[prescription_mask]["_id"].tolist()
+                for prescription_id in prescription_ids:
+                    prescription_idx = self.product_index.get(prescription_id)
+                    if prescription_idx is not None:
+                        sim_scores[prescription_idx] = 0
+
+            if exclude_prescription_mismatch:
+                current_rx = self.products_df.iloc[idx]["requiresPrescription"]
+                diff_rx = self.products_df[self.products_df["requiresPrescription"] != current_rx]["_id"].tolist()
+                for diff_id in diff_rx:
+                    diff_idx = self.product_index.get(diff_id)
+                    if diff_idx is not None:
+                        sim_scores[diff_idx] *= 0.3
+
+        top_indices = np.argsort(sim_scores)[::-1][:limit]
+        return [
+            {"productId": self.index_product[i], "score": round(float(sim_scores[i]), 6)}
+            for i in top_indices
+            if sim_scores[i] > 0
+        ]
+
     async def get_related_diverse(
         self,
         product_id: str,
@@ -262,6 +311,67 @@ class TFIDFRecommender:
             remaining.remove(best_idx)
 
         return [candidates[i] for i in selected_local_indices]
+
+    async def get_related_diverse_scored(
+        self,
+        product_id: str,
+        limit: int = 8,
+        lambda_mmr: float = 0.7,
+        candidate_pool: int = 30,
+        exclude_prescription_mismatch: bool = True,
+        exclude_prescription: bool = True
+    ) -> List[Dict]:
+        """Return MMR-selected related products with cosine relevance scores."""
+        if not self.is_trained or self.tfidf_matrix is None:
+            return []
+
+        idx = self.product_index.get(product_id)
+        if idx is None:
+            return []
+
+        candidate_items = await self.get_related_scored(
+            product_id,
+            limit=candidate_pool,
+            exclude_prescription_mismatch=exclude_prescription_mismatch,
+            exclude_prescription=exclude_prescription
+        )
+        candidates = [item["productId"] for item in candidate_items]
+        score_by_id = {item["productId"]: float(item["score"]) for item in candidate_items}
+        if not candidates:
+            return []
+
+        query_vec = self.tfidf_matrix[idx]
+        candidate_indices = [self.product_index[pid] for pid in candidates if pid in self.product_index]
+        if not candidate_indices:
+            return candidate_items[:limit]
+
+        candidate_matrix = self.tfidf_matrix[candidate_indices]
+        relevance_scores = cosine_similarity(query_vec, candidate_matrix).flatten()
+        inter_sim = cosine_similarity(candidate_matrix, candidate_matrix)
+
+        selected_local_indices: List[int] = []
+        remaining = list(range(len(candidate_indices)))
+        best = int(np.argmax(relevance_scores))
+        selected_local_indices.append(best)
+        remaining.remove(best)
+
+        while len(selected_local_indices) < min(limit, len(candidate_indices)) and remaining:
+            best_mmr = -1.0
+            best_idx = remaining[0]
+            for i in remaining:
+                rel = float(relevance_scores[i])
+                max_sim_to_selected = max(float(inter_sim[i, s]) for s in selected_local_indices)
+                mmr = lambda_mmr * rel - (1.0 - lambda_mmr) * max_sim_to_selected
+                if mmr > best_mmr:
+                    best_mmr = mmr
+                    best_idx = i
+            selected_local_indices.append(best_idx)
+            remaining.remove(best_idx)
+
+        return [
+            {"productId": candidates[i], "score": round(score_by_id.get(candidates[i], float(relevance_scores[i])), 6)}
+            for i in selected_local_indices
+        ]
 
     async def get_pharmacist_suggestions(
         self,
@@ -353,3 +463,53 @@ class TFIDFRecommender:
         # Sort và return top-N
         sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
         return [pid for pid, _ in sorted_candidates[:limit]]
+
+    async def get_pharmacist_suggestions_scored(
+        self,
+        chronic_diseases: List[str],
+        allergies: List[str],
+        current_medications: List[str],
+        prescription_product_ids: List[str],
+        limit: int = 10
+    ) -> List[Dict]:
+        if not self.is_trained:
+            return []
+
+        ids = await self.get_pharmacist_suggestions(
+            chronic_diseases,
+            allergies,
+            current_medications,
+            prescription_product_ids,
+            limit
+        )
+        if not ids:
+            return []
+
+        candidate_scores: Dict[str, float] = {}
+        for pid in prescription_product_ids:
+            p_idx = self.product_index.get(pid)
+            if p_idx is None:
+                continue
+            related = await self.get_related_scored(
+                pid,
+                limit=20,
+                exclude_prescription_mismatch=False,
+                exclude_prescription=False
+            )
+            for item in related:
+                candidate_scores[item["productId"]] = max(candidate_scores.get(item["productId"], 0), float(item["score"]))
+
+        if chronic_diseases and self.feature_texts:
+            for disease in chronic_diseases:
+                disease_lower = disease.lower().strip()
+                if len(disease_lower) < 3:
+                    continue
+                for idx, text in enumerate(self.feature_texts):
+                    pid = self.index_product.get(idx)
+                    if pid and pid in ids and disease_lower in text.lower():
+                        candidate_scores[pid] = candidate_scores.get(pid, 0) + 0.3
+
+        return [
+            {"productId": pid, "score": round(float(candidate_scores.get(pid, 0)), 6)}
+            for pid in ids
+        ]
