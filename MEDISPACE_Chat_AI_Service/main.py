@@ -13,6 +13,7 @@ import os
 import logging
 import re
 import json
+import inspect
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException
@@ -41,6 +42,14 @@ def _url_host(value: Optional[str]) -> str:
         return urlparse(value).hostname or "invalid-url"
     except Exception:
         return "invalid-url"
+
+def _vision_contract_status() -> dict:
+    signature = inspect.signature(PharmacyAgent.stream_respond)
+    return {
+        "stream_accepts_image_url": "image_url" in signature.parameters,
+        "request_aliases": ["image_url", "imageUrl"],
+        "inline_data_url_supported": True,
+    }
 
 agent = PharmacyAgent()
 
@@ -157,6 +166,7 @@ async def health():
         "llm_url":  os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space"),
         "phase":    "Phase 3 — Context Enrichment (orders, loyalty)",
         "endpoints": ["/chat", "/chat/stream", "/article/assist", "/article/ask"],
+        "vision": _vision_contract_status(),
         "rag": {
             "typesense_available": ts_status["available"],
             "typesense_url":       os.getenv("TYPESENSE_URL", ""),

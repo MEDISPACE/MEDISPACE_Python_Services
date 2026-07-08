@@ -92,11 +92,11 @@ MARKDOWN_PATTERNS = [
 
 def _clean_markdown(text: str) -> str:
     """Xoá markdown formatting từ output của LLM."""
-    # Code blocks
-    text = re.sub(r'```(?:json|python|text|markdown)?', '', text)
-    text = re.sub(r'```', '', text)
-    # Headings are flattened, but safe inline/list markdown is preserved.
-    text = re.sub(r'(?m)^\s*#{1,3}\s+', '', text)
+    for pattern in MARKDOWN_PATTERNS:
+        if len(pattern) == 2:
+            text = re.sub(pattern[0], pattern[1], text)
+        else:
+            text = re.sub(pattern[0], pattern[1], text, flags=pattern[2])
     # Raw HTML is not part of the chat contract.
     text = re.sub(r'<[^>]+>', '', text)
     # Bullet points "- " or "• " at start of line → giữ lại vì plain text OK

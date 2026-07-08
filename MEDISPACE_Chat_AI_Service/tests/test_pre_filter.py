@@ -173,14 +173,14 @@ class TestProductSearch:
 
 class TestGeneralNotMisclassified:
     def test_otc_info(self):
-        assert classify_message("Paracetamol có tác dụng gì?") == "general"
+        assert classify_message("Paracetamol có tác dụng gì?") == "drug_info_general"
 
     def test_symptom_query(self):
         assert classify_message("Tôi bị sổ mũi, đau đầu nhẹ thì dùng gì?") == "general"
 
     def test_rx_info_not_buy(self):
-        # Hỏi thông tin Rx (không mua) → general, để LLM xử lý qua system prompt
-        assert classify_message("Amoxicillin điều trị bệnh gì?") == "general"
+        # Hỏi thông tin Rx (không mua) → drug_info_general, để LLM xử lý qua system prompt
+        assert classify_message("Amoxicillin điều trị bệnh gì?") == "drug_info_general"
 
     def test_supplement_info(self):
         assert classify_message("Vitamin D3 bổ sung có tốt không?") == "general"

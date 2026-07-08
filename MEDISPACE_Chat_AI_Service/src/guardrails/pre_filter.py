@@ -7,6 +7,7 @@ MAX_MESSAGE_LENGTH = 800
 def _normalize_text(value: str) -> str:
     value = unicodedata.normalize('NFD', value or '')
     value = ''.join(ch for ch in value if unicodedata.category(ch) != 'Mn')
+    value = value.replace('đ', 'd').replace('Đ', 'D')
     return value.lower().strip()
 
 
@@ -46,6 +47,7 @@ PERSONALIZED_DOSAGE_PATTERNS = [
 ]
 
 ORDER_TRACKING_PATTERNS = [
+    r'\bkiem tra\b.{0,30}\bdon hang\b',
     r'\bdon hang\b.{0,30}\b(dau|trang thai|giao chua|giao roi|den dau)\b',
     r'\bORD[-\s]?\d+\b',
     r'\btheo doi\b.{0,20}\bdon\b',
@@ -71,6 +73,7 @@ COUPON_PATTERNS = [
 RETURN_PATTERNS = [
     r'\btra hang\b', r'\bdoi hang\b', r'\bhoan tien\b',
     r'\bsan pham (bi loi|hu|vo|hong)\b', r'\bhang (bi loi|hu|vo|hong|sai)\b',
+    r'\bsan pham\b.{0,40}\b(bi loi|hu|vo|hong|sai)\b.{0,40}\b(doi|tra|hoan)\b',
     r'\bRET[-\s]?\d+\b', r'\bye u cau\b.{0,20}\b(doi|tra|hoan)\b',
     r'\bgiao sai\b', r'\bkhong dung\b.{0,20}\b(hang|san pham|thuoc)\b',
     r'\bchinh sach\b.{0,20}\btra hang\b',

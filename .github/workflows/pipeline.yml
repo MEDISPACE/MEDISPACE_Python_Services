@@ -27,11 +27,22 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - run: pip install ruff -r MEDISPACE_ML_Service/requirements.txt
-      - run: ruff check MEDISPACE_OCR_Service MEDISPACE_ML_Service || true  # warn only
-      - run: pytest MEDISPACE_ML_Service/tests -q
+      - run: pip install ruff
+      - run: ruff check MEDISPACE_OCR_Service MEDISPACE_ML_Service MEDISPACE_Chat_AI_Service || true  # warn only
+      - name: Test ML service
+        run: |
+          python -m venv .venv-ml
+          . .venv-ml/bin/activate
+          pip install -r MEDISPACE_ML_Service/requirements.txt
+          pytest MEDISPACE_ML_Service/tests -q
+      - name: Test Chat AI service
+        run: |
+          python -m venv .venv-chat-ai
+          . .venv-chat-ai/bin/activate
+          pip install -r MEDISPACE_Chat_AI_Service/requirements.txt pytest pytest-asyncio
+          pytest MEDISPACE_Chat_AI_Service/tests -q
 
-  # ── Build & Push OCR + ML (parallel) ──────────────────────────────────────
+  # ── Build & Push OCR + ML + Chat AI (parallel) ────────────────────────────
   build-push:
     needs: ci
     if: github.event_name == 'push'
