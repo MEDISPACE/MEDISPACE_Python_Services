@@ -14,11 +14,12 @@ import logging
 import re
 import json
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from dotenv import load_dotenv
 
 from src.agents.pharmacy_agent import PharmacyAgent
@@ -32,6 +33,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("chat_ai")
+
+def _url_host(value: Optional[str]) -> str:
+    if not value:
+        return "none"
+    try:
+        return urlparse(value).hostname or "invalid-url"
+    except Exception:
+        return "invalid-url"
 
 agent = PharmacyAgent()
 
@@ -82,13 +91,15 @@ app.add_middleware(
 # ─── Chat Models ──────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     message: str
     conversation_id: str
     user_id: str
     history: Optional[List[dict]] = None
     context_products: Optional[List[dict]] = None
     context_data: Optional[dict] = None        # Phase 3: real user data (orders, loyalty)
-    image_url: Optional[str] = None            # Vision: URL ảnh gửi kèm từ Cloudinary
+    image_url: Optional[str] = Field(default=None, validation_alias=AliasChoices("image_url", "imageUrl"))  # Vision: URL anh gui kem
 
 
 class ChatResponse(BaseModel):
@@ -166,8 +177,8 @@ async def health():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     logger.info(
-        "[/chat] user=%s conv=%s msg_len=%d image=%s",
-        req.user_id, req.conversation_id, len(req.message), bool(req.image_url)
+        "[/chat] user=%s conv=%s msg_len=%d image=%s image_host=%s",
+        req.user_id, req.conversation_id, len(req.message), bool(req.image_url), _url_host(req.image_url)
     )
     try:
         result = await agent.respond(
@@ -189,8 +200,8 @@ async def chat(req: ChatRequest):
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     logger.info(
-        "[/chat/stream] user=%s conv=%s msg_len=%d image=%s",
-        req.user_id, req.conversation_id, len(req.message), bool(req.image_url)
+        "[/chat/stream] user=%s conv=%s msg_len=%d image=%s image_host=%s",
+        req.user_id, req.conversation_id, len(req.message), bool(req.image_url), _url_host(req.image_url)
     )
     try:
         return StreamingResponse(

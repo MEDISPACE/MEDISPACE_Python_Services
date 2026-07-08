@@ -61,6 +61,16 @@ IMAGE_FETCH_TIMEOUT = float(os.getenv("CHAT_AI_IMAGE_FETCH_TIMEOUT", "12"))
 SUPPORTED_IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
 
 
+def _detect_image_mime(image_bytes: bytes) -> str | None:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 class ImageFetchError(Exception):
     pass
 
@@ -81,9 +91,6 @@ async def normalize_image_for_llm(image_url: str) -> str:
             async with client.stream("GET", image_url) as response:
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
-                if content_type not in SUPPORTED_IMAGE_MIME:
-                    raise ImageFetchError("URL không phải ảnh hợp lệ")
-
                 chunks = []
                 total = 0
                 async for chunk in response.aiter_bytes():
@@ -95,6 +102,19 @@ async def normalize_image_for_llm(image_url: str) -> str:
         image_bytes = b"".join(chunks)
         if not image_bytes:
             raise ImageFetchError("Không tải được nội dung ảnh")
+        detected_type = _detect_image_mime(image_bytes)
+        if content_type not in SUPPORTED_IMAGE_MIME:
+            if not detected_type:
+                logger.warning(
+                    "[ImageFetch] Unsupported content-type=%s url=%s",
+                    content_type or "missing", image_url[:120]
+                )
+                raise ImageFetchError("URL khong phai anh hop le")
+            logger.info(
+                "[ImageFetch] Using detected image type %s instead of content-type=%s",
+                detected_type, content_type or "missing"
+            )
+            content_type = detected_type
         encoded = base64.b64encode(image_bytes).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
     except ImageFetchError:
@@ -1069,6 +1089,7 @@ class PharmacyAgent:
         try:
             image_payload_url = await normalize_image_for_llm(image_url)
         except ImageFetchError as exc:
+            logger.warning("[PharmacyAgent Vision] Image fetch failed: %s url=%s", exc, image_url[:120])
             return {
                 "reply": str(exc),
                 "classification": "image_only_triage",
@@ -1164,6 +1185,7 @@ class PharmacyAgent:
         try:
             image_payload_url = await normalize_image_for_llm(image_url)
         except ImageFetchError as exc:
+            logger.warning("[PharmacyAgent Vision Stream] Image fetch failed: %s url=%s", exc, image_url[:120])
             yield json.dumps({
                 "type": "error",
                 "message": str(exc),
