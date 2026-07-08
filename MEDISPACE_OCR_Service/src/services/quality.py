@@ -590,6 +590,8 @@ def _weak_noise_medication(med: Dict[str, Any]) -> bool:
     if _is_medication_header_noise(name):
         return True
     normalized = _normalize_text_key(name)
+    if _is_date_like_medication_name(name):
+        return True
     has_quantity_or_unit = med.get("quantity") is not None or _truthy(med.get("unit"))
     if has_quantity_or_unit:
         return False
@@ -627,11 +629,36 @@ def _is_medication_header_noise(name: Any) -> bool:
         "lưu ý",
         "ghi chu",
         "ghi chú",
+        "ngay kham",
+        "ngày khám",
+        "ngay tai kham",
+        "ngày tái khám",
+        "tai kham",
+        "tái khám",
+        "nuoc sx",
+        "nước sx",
+        "nuoc san xuat",
+        "nước sản xuất",
+        "nha san xuat",
+        "nhà sản xuất",
+        "xuat xu",
+        "xuất xứ",
+        "viet nam",
+        "việt nam",
         "dvt",
         "don vi",
         "đơn vị",
         "stt",
     }
+
+def _is_date_like_medication_name(name: str) -> bool:
+    text = str(name or "").strip()
+    normalized = _normalize_text_key(text)
+    if re.fullmatch(r"\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?", text):
+        return True
+    if re.fullmatch(r"\d{1,2}\s*(?:thang|tháng)\s*\d{1,2}(?:\s*(?:nam|năm)\s*\d{2,4})?", normalized):
+        return True
+    return False
 
 def _clean_scalar(value: Any) -> Optional[str]:
     if value is None:

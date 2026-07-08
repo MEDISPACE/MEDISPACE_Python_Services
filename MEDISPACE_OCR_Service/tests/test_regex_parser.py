@@ -327,6 +327,29 @@ def test_merge_filters_administrative_vision_noise_and_duplicate_names() -> None
         "BIOCID MH 3.542g",
     ]
 
+def test_merge_filters_metadata_and_date_like_medication_noise() -> None:
+    traditional = {
+        "medications": [
+            {"productName": "Nước Sx", "quantity": 3, "unit": "lọ"},
+            {"productName": "Scilin M30 40U/ml", "quantity": 3, "unit": "lọ"},
+            {"productName": "Việt Nam", "quantity": 1, "unit": None},
+            {"productName": "Metformin(INDFORM)", "quantity": 90, "unit": "viên"},
+        ]
+    }
+    vision = {
+        "medications": [
+            {"productName": "Ngày khám", "confidence": "low"},
+            {"productName": "7/1/21", "confidence": "low"},
+        ]
+    }
+
+    merged, _quality = merge_candidates(traditional, vision)
+
+    assert [med["productName"] for med in merged["medications"]] == [
+        "Scilin M30 40U/ml",
+        "Metformin(INDFORM)",
+    ]
+
 
 def test_donthuoc_jpg_raw_ocr_keeps_all_medications_and_age() -> None:
     raw_text = """
@@ -506,6 +529,8 @@ def test_vision_freeform_fallback_ignores_notes_and_trims_usage_tail() -> None:
 * Kerian 60mg x nổ/2 ngày
 * Tebecerol 60mg x nổ/2 ngày
 * (Lưu ý: uống sau ăn)
+* 7/1/21
+* 22/2
 """
 
     result = _extract_medications_from_freeform(reading)

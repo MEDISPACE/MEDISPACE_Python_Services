@@ -245,6 +245,7 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
         "loại tài liệu", "mo ta", "mô tả", "dua tren", "dựa trên", "don thuoc",
         "đơn thuốc", "cac thuoc", "các thuốc", "san pham", "sản phẩm",
         "ghi chu", "ghi chú", "thong tin", "thông tin", "chan doan", "chẩn đoán",
+        "ngay kham", "ngày khám", "ngay tai kham", "ngày tái khám", "tai kham", "tái khám",
     )
 
     def clean_name(value: str) -> str:
@@ -279,6 +280,8 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
         name_key = re.sub(r"^\W+|\W+$", "", re.sub(r"\s+", " ", name.lower())).strip()
         if any(name_key.startswith(prefix) for prefix in stop_prefixes):
             continue
+        if _is_date_like_freeform_name(name):
+            continue
         if len(name.split()) > 6:
             continue
         key = re.sub(r"\W+", "", name.lower())
@@ -311,6 +314,15 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
         "confidence": "low" if medications else "medium",
         "_extraction_method": "vision_freeform_fallback",
     }
+
+def _is_date_like_freeform_name(name: str) -> bool:
+    text = str(name or "").strip()
+    normalized = re.sub(r"\s+", " ", text.lower()).strip()
+    if re.fullmatch(r"\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?", text):
+        return True
+    if re.fullmatch(r"\d{1,2}\s*(?:thang|tháng)\s*\d{1,2}(?:\s*(?:nam|năm)\s*\d{2,4})?", normalized):
+        return True
+    return False
 
 def _post_llm(endpoint: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: int, retries: int, retry_backoff: float, label: str) -> str:
     last_error = f"{label} failed"
