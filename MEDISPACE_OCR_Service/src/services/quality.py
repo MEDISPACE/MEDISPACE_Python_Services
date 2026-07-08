@@ -430,7 +430,28 @@ def _best_medication_match(med: Dict[str, Any], candidates: List[Dict[str, Any]]
         if score > best_score:
             best = candidate
             best_score = score
-    return best if best_score >= 0.55 else None
+    if not best:
+        return None
+    if best_score >= 0.72:
+        return best
+    if best_score >= 0.55 and _has_medication_identity_overlap(name, str(best.get("productName") or "")):
+        return best
+    return None
+
+def _has_medication_identity_overlap(left: str, right: str) -> bool:
+    left_tokens = _identity_name_tokens(_normalize_text_key(left))
+    right_tokens = _identity_name_tokens(_normalize_text_key(right))
+    return bool(left_tokens & right_tokens)
+
+def _identity_name_tokens(value: str) -> set[str]:
+    tokens = set()
+    for token in value.split():
+        if len(token) < 4:
+            continue
+        if any(ch.isdigit() for ch in token):
+            continue
+        tokens.add(token)
+    return tokens
 
 def _weak_traditional_vision_name_match(
     traditional_med: Dict[str, Any],
@@ -622,8 +643,12 @@ def _is_medication_header_noise(name: Any) -> bool:
         "bệnh nhân",
         "ho ten",
         "họ tên",
+        "ho ten nguoi benh",
+        "họ tên người bệnh",
         "ten",
         "tên",
+        "tuoi",
+        "tuổi",
         "dia chi",
         "địa chỉ",
         "chan doan",
@@ -635,10 +660,14 @@ def _is_medication_header_noise(name: Any) -> bool:
         "ghi chú",
         "ngay kham",
         "ngày khám",
+        "ngay ke don",
+        "ngày kê đơn",
         "ngay tai kham",
         "ngày tái khám",
         "tai kham",
         "tái khám",
+        "phan ghi chu cuoi don",
+        "phần ghi chú cuối đơn",
         "nuoc sx",
         "nước sx",
         "nuoc san xuat",

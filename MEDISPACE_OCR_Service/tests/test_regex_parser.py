@@ -351,6 +351,29 @@ def test_merge_filters_metadata_and_date_like_medication_noise() -> None:
         "Metformin(INDFORM)",
     ]
 
+def test_merge_filters_remaining_administrative_labels_from_production() -> None:
+    traditional = {
+        "medications": [
+            {"productName": "Họ tên người bệnh", "dosage": "3vx3 lần/ngày", "quantity": None, "unit": None},
+            {"productName": "Đại tần giao (H/100V)", "quantity": 2, "unit": "viên"},
+        ]
+    }
+    vision = {
+        "medications": [
+            {"productName": "Tuổi", "confidence": "low"},
+            {"productName": "Ngày kê đơn", "confidence": "low"},
+            {"productName": "Phần ghi chú cuối đơn", "confidence": "low"},
+            {"productName": "Ginkobil (H/100v)", "confidence": "low"},
+        ]
+    }
+
+    merged, _quality = merge_candidates(traditional, vision)
+
+    assert [med["productName"] for med in merged["medications"]] == [
+        "Đại tần giao (H/100V)",
+        "Ginkobil (H/100v)",
+    ]
+
 
 def test_donthuoc_jpg_raw_ocr_keeps_all_medications_and_age() -> None:
     raw_text = """
@@ -541,3 +564,17 @@ def test_vision_freeform_fallback_ignores_notes_and_trims_usage_tail() -> None:
         "Kerian 60mg",
         "Tebecerol 60mg",
     ]
+
+def test_vision_freeform_fallback_ignores_administrative_labels() -> None:
+    reading = """
+* Cidi colin
+* Ngày kê đơn
+* Phần ghi chú cuối đơn
+* Họ tên người bệnh
+* Tuổi
+* Atglonyl
+"""
+
+    result = _extract_medications_from_freeform(reading)
+
+    assert [med["productName"] for med in result["medications"]] == ["Cidi colin", "Atglonyl"]
