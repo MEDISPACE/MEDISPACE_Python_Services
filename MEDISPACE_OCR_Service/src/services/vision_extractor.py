@@ -249,6 +249,7 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
         "ngay kham", "ngày khám", "ngay tai kham", "ngày tái khám", "tai kham", "tái khám",
         "ngay ke don", "ngày kê đơn", "ho ten", "họ tên", "ho ten nguoi benh", "họ tên người bệnh",
         "tuoi", "tuổi", "phan ghi chu", "phần ghi chú", "phan ghi chu cuoi don", "phần ghi chú cuối đơn",
+        "noi san xuat", "nơi sản xuất", "xac dinh", "xác định",
     )
 
     def clean_name(value: str) -> str:

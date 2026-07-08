@@ -363,6 +363,8 @@ def test_merge_filters_remaining_administrative_labels_from_production() -> None
             {"productName": "Tuổi", "confidence": "low"},
             {"productName": "Ngày kê đơn", "confidence": "low"},
             {"productName": "Phần ghi chú cuối đơn", "confidence": "low"},
+            {"productName": "Xác định", "confidence": "low"},
+            {"productName": "Nơi sản xuất", "confidence": "low"},
             {"productName": "Ginkobil (H/100v)", "confidence": "low"},
         ]
     }
@@ -371,6 +373,28 @@ def test_merge_filters_remaining_administrative_labels_from_production() -> None
 
     assert [med["productName"] for med in merged["medications"]] == [
         "Đại tần giao (H/100V)",
+        "Ginkobil (H/100v)",
+    ]
+
+def test_merge_filters_soft_duplicate_vision_name_without_dropping_distinct_packaged_names() -> None:
+    traditional = {
+        "medications": [
+            {"productName": "Đại tần giao (H/100V)", "quantity": 2, "unit": "viên"},
+            {"productName": "Rhcumatin (Ch/40v)", "quantity": 3, "unit": "chai"},
+        ]
+    }
+    vision = {
+        "medications": [
+            {"productName": "Ginkobil (H/100v)", "confidence": "low"},
+            {"productName": "Rheumatin", "confidence": "low"},
+        ]
+    }
+
+    merged, _quality = merge_candidates(traditional, vision)
+
+    assert [med["productName"] for med in merged["medications"]] == [
+        "Đại tần giao (H/100V)",
+        "Rhcumatin (Ch/40v)",
         "Ginkobil (H/100v)",
     ]
 
@@ -572,6 +596,8 @@ def test_vision_freeform_fallback_ignores_administrative_labels() -> None:
 * Phần ghi chú cuối đơn
 * Họ tên người bệnh
 * Tuổi
+* Xác định
+* Nơi sản xuất
 * Atglonyl
 """
 

@@ -599,12 +599,27 @@ def _duplicate_medication_name(candidate: Dict[str, Any], existing_meds: List[Di
             return True
         if existing_tokens and existing_tokens.issubset(candidate_tokens) and len(existing_tokens) >= 2:
             return True
+        if _primary_name_similarity(candidate_key, existing_key) >= 0.82:
+            return True
         if _similarity(candidate_key, existing_key) >= 0.72:
             return True
     return False
 
 def _significant_name_tokens(value: str) -> set[str]:
     return {token for token in value.split() if len(token) >= 3 or any(ch.isdigit() for ch in token)}
+
+def _primary_name_similarity(left: str, right: str) -> float:
+    left_primary = _primary_name_token(left)
+    right_primary = _primary_name_token(right)
+    if not left_primary or not right_primary:
+        return 0.0
+    return _similarity(left_primary, right_primary)
+
+def _primary_name_token(value: str) -> str:
+    for token in value.split():
+        if len(token) >= 5 and not any(ch.isdigit() for ch in token):
+            return token
+    return ""
 
 def _weak_noise_medication(med: Dict[str, Any]) -> bool:
     name = str(med.get("productName") or "").strip()
@@ -672,12 +687,16 @@ def _is_medication_header_noise(name: Any) -> bool:
         "nước sx",
         "nuoc san xuat",
         "nước sản xuất",
+        "noi san xuat",
+        "nơi sản xuất",
         "nha san xuat",
         "nhà sản xuất",
         "xuat xu",
         "xuất xứ",
         "viet nam",
         "việt nam",
+        "xac dinh",
+        "xác định",
         "dvt",
         "don vi",
         "đơn vị",
