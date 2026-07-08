@@ -48,6 +48,10 @@ jobs:
             image: medispace-ml
             context: ./MEDISPACE_ML_Service
             dockerfile: ./MEDISPACE_ML_Service/Dockerfile
+          - service: chat-ai-service
+            image: medispace-chat-ai
+            context: ./MEDISPACE_Chat_AI_Service
+            dockerfile: ./MEDISPACE_Chat_AI_Service/Dockerfile
 
     steps:
       - uses: actions/checkout@v4
