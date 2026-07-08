@@ -351,6 +351,8 @@ def _normalize_medications(medications: Any, source: str) -> List[Dict[str, Any]
         if not isinstance(med, dict):
             continue
         product_name = _clean_scalar(med.get("productName") or med.get("name") or med.get("drugName"))
+        if _is_medication_header_noise(product_name):
+            continue
         item = {
             "productName": product_name or "",
             "dosage": _clean_scalar(med.get("dosage")) or "",
@@ -385,19 +387,35 @@ def _merge_medications(traditional_meds: List[Dict[str, Any]], vision_meds: List
                 item["reviewReason"] = "quantity_conflict"
             merged.append(item)
         else:
+            weak_vision_match = _weak_traditional_vision_name_match(trad, vision_meds, used_vision)
+            if weak_vision_match:
+                used_vision.add(id(weak_vision_match))
+                item = dict(weak_vision_match)
+                item["dosage"] = item.get("dosage") or trad.get("dosage") or ""
+                item["quantity"] = item.get("quantity") if item.get("quantity") is not None else trad.get("quantity")
+                item["unit"] = item.get("unit") or trad.get("unit")
+                item["instructions"] = item.get("instructions") or trad.get("instructions") or ""
+                item["source"] = "merged"
+                item["sources"] = sorted(set([trad.get("source", "traditional"), weak_vision_match.get("source", "vision")]))
+                item["needsReview"] = True
+                item["reviewReason"] = "weak_traditional_name_replaced"
+                merged.append(item)
+                continue
+            if _weak_noise_medication(trad):
+                continue
             item = dict(trad)
             item["needsReview"] = True
             item["reviewReason"] = "only_traditional"
             merged.append(item)
 
     for vision in vision_meds:
-        if id(vision) not in used_vision:
+        if id(vision) not in used_vision and not _weak_noise_medication(vision):
             item = dict(vision)
             item["needsReview"] = True
             item["reviewReason"] = "only_vision"
             merged.append(item)
 
-    return merged
+    return _expand_embedded_numbered_medications(merged)
 
 
 def _best_medication_match(med: Dict[str, Any], candidates: List[Dict[str, Any]], used_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
@@ -414,6 +432,81 @@ def _best_medication_match(med: Dict[str, Any], candidates: List[Dict[str, Any]]
             best_score = score
     return best if best_score >= 0.55 else None
 
+def _weak_traditional_vision_name_match(
+    traditional_med: Dict[str, Any],
+    vision_meds: List[Dict[str, Any]],
+    used_ids: set,
+) -> Optional[Dict[str, Any]]:
+    if not _weak_noise_medication(traditional_med):
+        return None
+    if not (_truthy(traditional_med.get("dosage")) or _truthy(traditional_med.get("instructions"))):
+        return None
+
+    for vision in vision_meds:
+        if id(vision) in used_ids or _weak_noise_medication(vision):
+            continue
+        if vision.get("quantity") is not None or _truthy(vision.get("unit")):
+            continue
+        name = str(vision.get("productName") or "").strip()
+        if len(name) >= 5:
+            return vision
+    return None
+
+
+def _expand_embedded_numbered_medications(meds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    expanded: List[Dict[str, Any]] = []
+    existing_names = {_normalize_text_key(str(med.get("productName") or "")) for med in meds}
+
+    for med in meds:
+        item = dict(med)
+        extra_items: List[Dict[str, Any]] = []
+        for field in ["dosage", "instructions"]:
+            text = str(item.get(field) or "")
+            parsed = _parse_embedded_numbered_medication(text)
+            if not parsed:
+                continue
+
+            cleaned_text, extra_name, extra_instruction = parsed
+            item[field] = cleaned_text
+            if field == "dosage" and str(item.get("instructions") or "") == text:
+                item["instructions"] = cleaned_text
+
+            name_key = _normalize_text_key(extra_name)
+            if name_key and name_key not in existing_names:
+                existing_names.add(name_key)
+                extra_items.append({
+                    "productName": extra_name,
+                    "dosage": extra_instruction,
+                    "quantity": None,
+                    "unit": None,
+                    "instructions": extra_instruction,
+                    "source": item.get("source", "merged"),
+                    "needsReview": True,
+                    "reviewReason": "split_from_embedded_numbered_instruction",
+                })
+
+        expanded.append(item)
+        expanded.extend(extra_items)
+
+    return expanded
+
+def _parse_embedded_numbered_medication(text: str) -> Optional[Tuple[str, str, str]]:
+    if not text or not re.search(r"\b\d+\.\s*", text):
+        return None
+
+    match = re.search(r"^(?P<prefix>.*?)[,;]?\s+\d+\.\s*(?P<name>[^,;]+?)(?:[,;]\s*(?P<instruction>.+))?$", text)
+    if not match:
+        return None
+
+    prefix = (match.group("prefix") or "").strip(" ,;")
+    name = (match.group("name") or "").strip(" ,;")
+    instruction = (match.group("instruction") or "").strip(" ,;")
+    if not prefix or not name or _is_medication_header_noise(name):
+        return None
+    if len(_normalize_text_key(name)) < 5:
+        return None
+
+    return prefix, name, instruction
 
 def _mark_medications_source(data: Dict[str, Any], source: str) -> Dict[str, Any]:
     result = dict(data)
@@ -467,6 +560,35 @@ def _medication_completeness(med: Dict[str, Any]) -> int:
 def _quantity_conflict(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     return left.get("quantity") is not None and right.get("quantity") is not None and left.get("quantity") != right.get("quantity")
 
+
+def _weak_noise_medication(med: Dict[str, Any]) -> bool:
+    name = str(med.get("productName") or "").strip()
+    if _is_medication_header_noise(name):
+        return True
+    normalized = _normalize_text_key(name)
+    has_quantity_or_unit = med.get("quantity") is not None or _truthy(med.get("unit"))
+    if has_quantity_or_unit:
+        return False
+    if len(normalized) <= 4 and (_truthy(med.get("dosage")) or _truthy(med.get("instructions"))):
+        return True
+    return False
+
+def _is_medication_header_noise(name: Any) -> bool:
+    normalized = _normalize_text_key(str(name or ""))
+    return normalized in {
+        "ham luong",
+        "hàm lượng",
+        "so luong",
+        "số lượng",
+        "ten thuoc",
+        "tên thuốc",
+        "ten thuoc ham luong",
+        "tên thuốc hàm lượng",
+        "dvt",
+        "don vi",
+        "đơn vị",
+        "stt",
+    }
 
 def _clean_scalar(value: Any) -> Optional[str]:
     if value is None:

@@ -259,6 +259,47 @@ Quy khach vui long mang don thuoc khi kham lai
 
     assert [med["productName"] for med in medications] == ["Halox"]
 
+def test_merge_filters_vision_header_noise_and_pairs_weak_traditional_name() -> None:
+    traditional = {
+        "medications": [
+            {
+                "productName": "Hôn",
+                "dosage": "3vx3 lần/ ngày (sau ăn)",
+                "quantity": None,
+                "unit": None,
+                "instructions": "3vx3 lần/ ngày (sau ăn)",
+            },
+            {
+                "productName": "JEX (H/30V)",
+                "dosage": "Ivx2 lần/ngày (sau ăn), 7. Cồn xoa bóp Viện, xoa lưng đau",
+                "quantity": 2,
+                "unit": "viên",
+                "instructions": "Ivx2 lần/ngày (sau ăn), 7. Cồn xoa bóp Viện, xoa lưng đau",
+            },
+        ]
+    }
+    vision = {
+        "medications": [
+            {"productName": "Seotolac", "confidence": "low"},
+            {"productName": "Hàm lượng", "confidence": "low"},
+            {"productName": "Số lượng", "confidence": "low"},
+            {"productName": "Độc hoạt TKS viên", "confidence": "low"},
+        ]
+    }
+
+    merged, _quality = merge_candidates(traditional, vision)
+
+    names = [med["productName"] for med in merged["medications"]]
+    assert "Hôn" not in names
+    assert "Hàm lượng" not in names
+    assert "Số lượng" not in names
+    assert names == ["Seotolac", "JEX (H/30V)", "Cồn xoa bóp Viện", "Độc hoạt TKS viên"]
+    assert merged["medications"][0]["dosage"] == "3vx3 lần/ ngày (sau ăn)"
+    assert merged["medications"][0]["reviewReason"] == "weak_traditional_name_replaced"
+    assert merged["medications"][1]["dosage"] == "Ivx2 lần/ngày (sau ăn)"
+    assert merged["medications"][2]["instructions"] == "xoa lưng đau"
+    assert merged["medications"][2]["reviewReason"] == "split_from_embedded_numbered_instruction"
+
 
 def test_donthuoc_jpg_raw_ocr_keeps_all_medications_and_age() -> None:
     raw_text = """
