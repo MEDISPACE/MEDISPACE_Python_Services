@@ -83,6 +83,8 @@ def _normalize_text(value: str) -> str:
 
 async def normalize_image_for_llm(image_url: str) -> str:
     """Download an image URL and return a data URL so the LLM receives bytes directly."""
+    if image_url and re.match(r"^data:image/(jpeg|jpg|png|webp);base64,", image_url, re.IGNORECASE):
+        return image_url
     if not image_url or not re.match(r"^https?://", image_url, re.IGNORECASE):
         raise ImageFetchError("image_url must be an http(s) URL")
 
