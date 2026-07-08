@@ -244,6 +244,7 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
         "lieu luong", "liều lượng", "cach dung", "cách dùng", "loai tai lieu",
         "loại tài liệu", "mo ta", "mô tả", "dua tren", "dựa trên", "don thuoc",
         "đơn thuốc", "cac thuoc", "các thuốc", "san pham", "sản phẩm",
+        "thuoc dung", "thuốc dùng", "thuoc dieu tri", "thuốc điều trị",
         "ghi chu", "ghi chú", "thong tin", "thông tin", "chan doan", "chẩn đoán",
         "ngay kham", "ngày khám", "ngay tai kham", "ngày tái khám", "tai kham", "tái khám",
     )

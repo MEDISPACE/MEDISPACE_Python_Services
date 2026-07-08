@@ -338,6 +338,7 @@ def test_merge_filters_metadata_and_date_like_medication_noise() -> None:
     }
     vision = {
         "medications": [
+            {"productName": "Thuốc dùng", "confidence": "low"},
             {"productName": "Ngày khám", "confidence": "low"},
             {"productName": "7/1/21", "confidence": "low"},
         ]
