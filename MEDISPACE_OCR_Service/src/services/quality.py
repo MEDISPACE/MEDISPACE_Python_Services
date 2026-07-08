@@ -584,6 +584,8 @@ def _is_medication_header_noise(name: Any) -> bool:
         "tên thuốc",
         "ten thuoc ham luong",
         "tên thuốc hàm lượng",
+        "danh sach thuoc",
+        "danh sách thuốc",
         "dvt",
         "don vi",
         "đơn vị",

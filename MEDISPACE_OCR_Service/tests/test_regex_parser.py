@@ -280,6 +280,7 @@ def test_merge_filters_vision_header_noise_and_pairs_weak_traditional_name() -> 
     }
     vision = {
         "medications": [
+            {"productName": "Danh sách thuốc", "confidence": "low"},
             {"productName": "Seotolac", "confidence": "low"},
             {"productName": "Hàm lượng", "confidence": "low"},
             {"productName": "Số lượng", "confidence": "low"},
@@ -291,6 +292,7 @@ def test_merge_filters_vision_header_noise_and_pairs_weak_traditional_name() -> 
 
     names = [med["productName"] for med in merged["medications"]]
     assert "Hôn" not in names
+    assert "Danh sách thuốc" not in names
     assert "Hàm lượng" not in names
     assert "Số lượng" not in names
     assert names == ["Seotolac", "JEX (H/30V)", "Cồn xoa bóp Viện", "Độc hoạt TKS viên"]
