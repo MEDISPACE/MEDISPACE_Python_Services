@@ -306,12 +306,30 @@ def run_parallel_pipeline(image: np.ndarray, file_bytes: bytes, filename: str, c
         critical_flags = quality.get("criticalFlags") or []
         can_return = bool(quality.get("canEarlyReturn"))
         if source == "traditional" and not can_return:
+            data = result.get("data") or {}
+            medications = data.get("medications") if isinstance(data, dict) else []
+            medications = medications if isinstance(medications, list) else []
+            extraction_method = str(data.get("_extraction_method") or "").lower() if isinstance(data, dict) else ""
+            medication_count = int(quality.get("medicationCount", 0) or 0)
+            min_meds_for_early_return = int(os.getenv("TRADITIONAL_EARLY_RETURN_MIN_MEDICATIONS", "2"))
+            suspicious_quantity_limit = int(os.getenv("TRADITIONAL_SUSPICIOUS_QUANTITY_LIMIT", "120"))
+            has_suspicious_quantity = any(
+                med.get("quantity") is not None and med.get("quantity") >= suspicious_quantity_limit
+                for med in medications
+                if isinstance(med, dict)
+            )
+            weak_regex_only = extraction_method == "regex_only" and (
+                medication_count < min_meds_for_early_return
+                or has_suspicious_quantity
+                or "suspicious_medication_text" in (quality.get("flags") or [])
+            )
             can_return = bool(
                 quality.get("score", 0) >= int(os.getenv("TRADITIONAL_EARLY_RETURN_MIN_SCORE", "88"))
-                and quality.get("medicationCount", 0) >= int(os.getenv("TRADITIONAL_EARLY_RETURN_MIN_MEDICATIONS", "2"))
+                and medication_count >= min_meds_for_early_return
                 and quality.get("medicationNameRatio", 0) >= 0.8
                 and quality.get("medicationQuantityUnitRatio", 0) >= 0.7
                 and quality.get("medicationUnitRatio", 0) >= 0.5
+                and not weak_regex_only
                 and not critical_flags
             )
         if not can_return:

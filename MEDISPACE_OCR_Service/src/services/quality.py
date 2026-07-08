@@ -93,6 +93,8 @@ def score_candidate(data: Optional[Dict[str, Any]], source: str = "unknown", has
         with_qty = 0
         with_unit = 0
 
+    medication_count = len(meds)
+
     present_key_fields = sum(1 for field in KEY_FIELDS if _truthy(candidate.get(field)))
     score += round(10 * present_key_fields / len(KEY_FIELDS))
 
@@ -115,6 +117,14 @@ def score_candidate(data: Optional[Dict[str, Any]], source: str = "unknown", has
         flags.append("invalid_quantity")
         score -= min(20, invalid_quantity_count * 10)
 
+    suspicious_large_quantity_count = sum(
+        1 for med in meds
+        if med.get("quantity") is not None and med.get("quantity") >= 120
+    )
+    if source == "traditional" and medication_count <= 1 and suspicious_large_quantity_count:
+        flags.append("suspicious_large_quantity")
+        score -= 20
+
     if _date_impossible(candidate.get("prescriptionDate")):
         flags.append("date_impossible")
         score -= 15
@@ -124,7 +134,6 @@ def score_candidate(data: Optional[Dict[str, Any]], source: str = "unknown", has
         flags.append("duplicate_medications")
         score -= min(duplicate_count * 5, 15)
 
-    medication_count = len(meds)
     name_ratio = (with_names / medication_count) if medication_count else 0
     qty_unit_ratio = (with_qty_or_unit / medication_count) if medication_count else 0
     quantity_ratio = (with_qty / medication_count) if medication_count else 0
@@ -142,7 +151,13 @@ def score_candidate(data: Optional[Dict[str, Any]], source: str = "unknown", has
         flags.append("suspicious_medication_text")
         score -= min(25, suspicious_med_count * 12)
 
-    if source == "traditional" and medication_count and _traditional_candidate_looks_unsafe(candidate, raw_text, present_key_fields, suspicious_med_count):
+    if source == "traditional" and medication_count and _traditional_candidate_looks_unsafe(
+        candidate,
+        raw_text,
+        present_key_fields,
+        suspicious_med_count,
+        suspicious_large_quantity_count,
+    ):
         flags.append("unsafe_hallucination")
         score -= 35
 
@@ -281,9 +296,16 @@ def merge_candidates(
     for field in ["patientName", "patientAge", "patientGender", "phoneNumber", "doctorName", "hospitalName", "prescriptionDate", "diagnosis", "specialNotes"]:
         merged[field] = primary.get(field) or secondary.get(field)
 
-    if primary_source == "vision" and not traditional_quality.get("usableMedicationCandidate"):
+    traditional_low_trust = bool(
+        primary_source == "vision"
+        and (
+            not traditional_quality.get("usableMedicationCandidate")
+            or bool(set(traditional_quality.get("flags") or []) & {"unsafe_hallucination", "suspicious_large_quantity"})
+        )
+    )
+    if traditional_low_trust:
         merged["medications"] = [
-            _mark_single_medication_source(med, "vision", needs_review=True, reason="vision_selected_traditional_unusable")
+            _mark_single_medication_source(med, "vision", needs_review=True, reason="traditional_low_trust_ignored")
             for med in vision_data.get("medications", [])
         ]
     else:
@@ -468,15 +490,26 @@ def _suspicious_medication(med: Dict[str, Any]) -> bool:
     dosage_fragment = bool(dosage) and len(normalized_dosage.split()) <= 4 and any(token in normalized_dosage.split() for token in {"lan", "tran", "m"})
     return repeated_tokens or too_many_separators or mostly_short_tokens or dosage_fragment
 
-def _traditional_candidate_looks_unsafe(candidate: Dict[str, Any], raw_text: str, present_key_fields: int, suspicious_med_count: int) -> bool:
+def _traditional_candidate_looks_unsafe(
+    candidate: Dict[str, Any],
+    raw_text: str,
+    present_key_fields: int,
+    suspicious_med_count: int,
+    suspicious_large_quantity_count: int = 0,
+) -> bool:
     meds = candidate.get("medications") or []
     if not meds:
         return False
     raw_quality_bad = _raw_text_noise_ratio(raw_text) >= 0.45 or _numeric_line_ratio(raw_text) >= 0.35
     single_med_no_context = len(meds) == 1 and present_key_fields == 0
+    single_med_large_quantity = len(meds) == 1 and suspicious_large_quantity_count > 0
     has_zero_quantity = any(med.get("quantity") is not None and med.get("quantity") <= 0 for med in meds)
     all_from_weak_text = single_med_no_context and raw_quality_bad
-    return bool((all_from_weak_text and (suspicious_med_count or has_zero_quantity)) or (single_med_no_context and suspicious_med_count and has_zero_quantity))
+    return bool(
+        single_med_large_quantity
+        or (all_from_weak_text and (suspicious_med_count or has_zero_quantity))
+        or (single_med_no_context and suspicious_med_count and has_zero_quantity)
+    )
 
 def _raw_text_noise_ratio(raw_text: str) -> float:
     text = raw_text or ""
