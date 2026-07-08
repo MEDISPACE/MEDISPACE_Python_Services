@@ -235,6 +235,78 @@ def _extract_json_object(response_text: str) -> Dict[str, Any]:
             raise
         return json.loads(match.group(0))
 
+def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
+    text = reading or ""
+    medications = []
+    seen = set()
+    stop_prefixes = (
+        "luu y", "lưu ý", "tom tat", "tóm tắt", "khuyen cao", "khuyến cáo",
+        "lieu luong", "liều lượng", "cach dung", "cách dùng", "loai tai lieu",
+        "loại tài liệu", "mo ta", "mô tả", "dua tren", "dựa trên", "don thuoc",
+        "đơn thuốc", "cac thuoc", "các thuốc", "san pham", "sản phẩm",
+    )
+
+    def clean_name(value: str) -> str:
+        value = re.sub(r"^[\s\-*•]+", "", value.strip())
+        value = re.sub(r"^\d+[\.)]\s*", "", value)
+        value = value.replace("**", "").replace("__", "").strip(" :-–—\t")
+        if ":" in value:
+            value = value.split(":", 1)[0].strip(" :-–—\t")
+        value = re.sub(r"^c[oó]\s+th[eể]\s+l[aà]\s+", "", value, flags=re.IGNORECASE)
+        value = re.split(r"\s+\(.*", value, maxsplit=1)[0].strip(" :-–—\t") if "(" in value else value
+        return value.strip()
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        normalized = re.sub(r"^\d+[\.)]\s*", "", re.sub(r"\s+", " ", line.lower())).strip(" :-–—*")
+        if any(normalized.startswith(prefix) for prefix in stop_prefixes):
+            continue
+
+        candidate = ""
+        bullet_match = re.match(r"^(?:[-*•]|\d+[\.)])\s*(.+)$", line)
+        if bullet_match:
+            candidate = bullet_match.group(1)
+        elif ":" in line and len(line.split(":", 1)[0].split()) <= 5:
+            candidate = line.split(":", 1)[0]
+
+        name = clean_name(candidate)
+        if not name or len(name) < 3:
+            continue
+        if len(name.split()) > 6:
+            continue
+        key = re.sub(r"\W+", "", name.lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        medications.append({
+            "productName": name,
+            "activeIngredient": None,
+            "dosage": None,
+            "quantity": None,
+            "unit": None,
+            "instructions": None,
+            "confidence": "low",
+            "needsReview": True,
+            "reviewReason": "parsed_from_vision_freeform",
+        })
+
+    return {
+        "patientName": None,
+        "patientAge": None,
+        "patientGender": None,
+        "phoneNumber": None,
+        "doctorName": None,
+        "hospitalName": None,
+        "prescriptionDate": None,
+        "diagnosis": None,
+        "medications": medications,
+        "specialNotes": None,
+        "confidence": "low" if medications else "medium",
+        "_extraction_method": "vision_freeform_fallback",
+    }
+
 def _post_llm(endpoint: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: int, retries: int, retry_backoff: float, label: str) -> str:
     last_error = f"{label} failed"
     response: requests.Response | None = None
@@ -269,6 +341,8 @@ def extract_prescription_from_image(file_bytes: bytes, mime_type: str = "image/j
     api_key = os.getenv("CUSTOM_LLM_API_KEY", "")
     timeout = _env_int("VISION_LLM_TIMEOUT_SECONDS", 45)
     retries = max(1, _env_int("VISION_LLM_RETRIES", 2))
+    json_timeout = max(5, _env_int("VISION_JSON_NORMALIZE_TIMEOUT_SECONDS", min(timeout, 25)))
+    json_retries = max(1, _env_int("VISION_JSON_NORMALIZE_RETRIES", 1))
     retry_backoff = max(0.0, _env_float("VISION_LLM_RETRY_BACKOFF_SECONDS", 1.5))
     strategy = os.getenv("VISION_EXTRACTION_STRATEGY", "structured").strip().lower()
     if strategy not in {"direct", "structured", "two_stage"}:
@@ -370,9 +444,16 @@ def extract_prescription_from_image(file_bytes: bytes, mime_type: str = "image/j
             "response_format": {"type": "json_object"},
         }
         stage2_start = time.time()
-        text = _post_llm(endpoint, json_payload, headers, timeout, retries, retry_backoff, "Vision LLM JSON normalize")
-        timing["vision_json_seconds"] = round(time.time() - stage2_start, 2)
-        return _extract_json_object(text), reading
+        try:
+            text = _post_llm(endpoint, json_payload, headers, json_timeout, json_retries, retry_backoff, "Vision LLM JSON normalize")
+            timing["vision_json_seconds"] = round(time.time() - stage2_start, 2)
+            return _extract_json_object(text), reading
+        except (json.JSONDecodeError, RuntimeError, TimeoutError) as exc:
+            timing["vision_json_seconds"] = round(time.time() - stage2_start, 2)
+            timing["visionJsonFallbackReason"] = str(exc)
+            fallback = _extract_medications_from_freeform(reading)
+            fallback["_vision_json_error"] = f"Vision JSON normalize failed; used freeform fallback: {exc}"
+            return fallback, reading
 
     try:
         if strategy == "direct":

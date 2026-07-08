@@ -275,9 +275,10 @@ def build_ocr_response(
 def run_parallel_pipeline(image: np.ndarray, file_bytes: bytes, filename: str, content_type: str, mode: str, started_at: float) -> dict:
     vision_timeout = int(os.getenv("VISION_LLM_TIMEOUT_SECONDS", "45"))
     vision_strategy = os.getenv("VISION_EXTRACTION_STRATEGY", "structured").strip().lower()
-    default_branch_timeout = vision_timeout * (2 if vision_strategy == "two_stage" else 1) + 5
+    structured_fallback = os.getenv("VISION_STRUCTURED_FALLBACK_TWO_STAGE", "true").lower() != "false"
+    default_branch_timeout = vision_timeout * (2 if vision_strategy == "two_stage" or (vision_strategy == "structured" and structured_fallback) else 1) + 30
     timeout = int(os.getenv("VISION_BRANCH_TIMEOUT_SECONDS", str(default_branch_timeout)))
-    response_budget = int(os.getenv("OCR_RESPONSE_BUDGET_SECONDS", "75"))
+    response_budget = int(os.getenv("OCR_RESPONSE_BUDGET_SECONDS", "120"))
     if mode != "parallel_benchmark":
         timeout = min(timeout, response_budget)
     include_candidates = mode == "parallel_benchmark" or os.getenv("OCR_INCLUDE_CANDIDATES", "false").lower() == "true"
@@ -306,10 +307,11 @@ def run_parallel_pipeline(image: np.ndarray, file_bytes: bytes, filename: str, c
         can_return = bool(quality.get("canEarlyReturn"))
         if source == "traditional" and not can_return:
             can_return = bool(
-                quality.get("score", 0) >= int(os.getenv("TRADITIONAL_EARLY_RETURN_MIN_SCORE", "80"))
-                and quality.get("medicationCount", 0) >= 1
+                quality.get("score", 0) >= int(os.getenv("TRADITIONAL_EARLY_RETURN_MIN_SCORE", "88"))
+                and quality.get("medicationCount", 0) >= int(os.getenv("TRADITIONAL_EARLY_RETURN_MIN_MEDICATIONS", "2"))
                 and quality.get("medicationNameRatio", 0) >= 0.8
                 and quality.get("medicationQuantityUnitRatio", 0) >= 0.7
+                and quality.get("medicationUnitRatio", 0) >= 0.5
                 and not critical_flags
             )
         if not can_return:

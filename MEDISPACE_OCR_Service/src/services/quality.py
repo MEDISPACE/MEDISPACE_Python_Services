@@ -158,6 +158,15 @@ def score_candidate(data: Optional[Dict[str, Any]], source: str = "unknown", has
     score = max(0, min(100, score))
 
     critical = sorted(set(flags) & CRITICAL_FLAGS)
+    vision_name_only_candidate = (
+        source == "vision"
+        and medication_count >= 2
+        and name_ratio >= MEDICATION_NAME_HIGH_WATERMARK
+        and score >= 55
+        and not critical
+    )
+    usable_medication_candidate = is_usable_medication_candidate(score, medication_count, name_ratio, qty_unit_ratio, critical)
+
     return {
         "score": score,
         "level": _score_level(score),
@@ -168,7 +177,8 @@ def score_candidate(data: Optional[Dict[str, Any]], source: str = "unknown", has
         "medicationQuantityUnitRatio": round(qty_unit_ratio, 3),
         "medicationQuantityRatio": round(quantity_ratio, 3),
         "medicationUnitRatio": round(unit_ratio, 3),
-        "usableMedicationCandidate": is_usable_medication_candidate(score, medication_count, name_ratio, qty_unit_ratio, critical),
+        "usableMedicationCandidate": usable_medication_candidate or vision_name_only_candidate,
+        "usableByVisionNamesOnly": vision_name_only_candidate,
         "canEarlyReturn": can_early_return(score, medication_count, name_ratio, qty_unit_ratio, critical),
     }
 
@@ -271,7 +281,13 @@ def merge_candidates(
     for field in ["patientName", "patientAge", "patientGender", "phoneNumber", "doctorName", "hospitalName", "prescriptionDate", "diagnosis", "specialNotes"]:
         merged[field] = primary.get(field) or secondary.get(field)
 
-    merged["medications"] = _merge_medications(traditional_data.get("medications", []), vision_data.get("medications", []))
+    if primary_source == "vision" and not traditional_quality.get("usableMedicationCandidate"):
+        merged["medications"] = [
+            _mark_single_medication_source(med, "vision", needs_review=True, reason="vision_selected_traditional_unusable")
+            for med in vision_data.get("medications", [])
+        ]
+    else:
+        merged["medications"] = _merge_medications(traditional_data.get("medications", []), vision_data.get("medications", []))
     merged["confidence"] = _merged_confidence(traditional_quality.get("score", 0), vision_quality.get("score", 0), comparison)
     merged["_extraction_method"] = "parallel_merged"
 
@@ -336,8 +352,9 @@ def _merge_medications(traditional_meds: List[Dict[str, Any]], vision_meds: List
         vision_match = _best_medication_match(trad, vision_meds, used_vision)
         if vision_match:
             used_vision.add(id(vision_match))
-            item = dict(vision_match if _medication_completeness(vision_match) >= _medication_completeness(trad) else trad)
-            item["productName"] = trad.get("productName") or vision_match.get("productName")
+            prefer_vision = _medication_completeness(vision_match) >= _medication_completeness(trad)
+            item = dict(vision_match if prefer_vision else trad)
+            item["productName"] = (vision_match if prefer_vision else trad).get("productName") or trad.get("productName") or vision_match.get("productName")
             item["activeIngredient"] = vision_match.get("activeIngredient") or trad.get("activeIngredient")
             item["source"] = "merged"
             item["sources"] = sorted(set([trad.get("source", "traditional"), vision_match.get("source", "vision")]))

@@ -1,5 +1,6 @@
 from src.services.regex_parser import parse_with_regex
 from src.services.quality import merge_candidates, score_candidate
+from src.services.vision_extractor import _extract_medications_from_freeform
 
 
 def medication_names(raw_text: str) -> list[str]:
@@ -320,8 +321,8 @@ Nguyễn Văn Hùng
         "YESOM 40 40mg (Esomeprazol 40mg)",
         "SUCRATE GEL (Sucralfate 19 (goi)",
         "ARTHUR (Trimebutine 200)",
-        "PAZE (magnesi aluminometasilicate ,na",
-        "BIOCID MH 3.542g (Nhôm Hydroxide 3.542g.",
+        "PAZE (magnesi aluminometasilicate ,na bicarbonate,cao scopolia, alpha amylase,beta amuylase, protease)",
+        "BIOCID MH 3.542g (Nhôm Hydroxide 3.542g. Magnesi Hydroxide 100ml",
         "DIGLUMISAN (L-Arginine Hydrocloride 1000mg)",
     ]
     assert [med["quantity"] for med in medications] == [63, 63, 63, 63, 21, 63]
@@ -364,3 +365,69 @@ Tran, lần, m
     assert quality["usableMedicationCandidate"] is False
     assert merged["medications"] == []
     assert merged_quality["selectedSource"] == "none"
+
+def test_vision_names_are_used_when_traditional_handwriting_ocr_is_weak() -> None:
+    raw_text = """
+Ms: 17D/BV-01
+BỆNH VIỆN BỆNH NHIỆT ĐỚI
+ĐƠN THUỐC
+Btx benks Enux
+Keranoun
+lebeloles
+"""
+    traditional = {
+        "patientName": None,
+        "doctorName": None,
+        "hospitalName": None,
+        "prescriptionDate": None,
+        "medications": [
+            {
+                "productName": "Btx benks Enux",
+                "quantity": None,
+                "unit": None,
+                "dosage": "mỹ ở ngày",
+                "instructions": "mỹ ở ngày",
+            }
+        ],
+        "confidence": "low",
+    }
+    vision = {
+        "patientName": None,
+        "doctorName": None,
+        "hospitalName": None,
+        "prescriptionDate": None,
+        "medications": [
+            {"productName": "Etex bene", "quantity": None, "unit": None, "dosage": "", "instructions": ""},
+            {"productName": "Kerarian", "quantity": None, "unit": None, "dosage": "", "instructions": ""},
+            {"productName": "Tebacol", "quantity": None, "unit": None, "dosage": "", "instructions": ""},
+        ],
+        "confidence": "medium",
+    }
+
+    traditional_quality = score_candidate(traditional, "traditional", True, raw_text)
+    vision_quality = score_candidate(vision, "vision", False)
+    merged, merged_quality = merge_candidates(traditional, vision, traditional_quality, vision_quality, raw_text)
+
+    assert traditional_quality["usableMedicationCandidate"] is False
+    assert vision_quality["usableMedicationCandidate"] is True
+    assert vision_quality["usableByVisionNamesOnly"] is True
+    assert merged_quality["selectedSource"] == "vision"
+    assert [med["productName"] for med in merged["medications"]] == ["Etex bene", "Kerarian", "Tebacol"]
+    assert all(med["needsReview"] is True for med in merged["medications"])
+
+def test_vision_freeform_fallback_extracts_medication_names() -> None:
+    reading = """
+2. Các thuốc được kê đơn:
+
+* Etex bene: hỗ trợ tiêu hóa.
+* Kerarian: dùng theo hướng dẫn bác sĩ.
+* Tebacol: số lượng có thể là 15ml.
+
+3. Liều lượng và Cách dùng:
+Các loại thuốc này được kê với liều lượng cụ thể.
+"""
+
+    result = _extract_medications_from_freeform(reading)
+
+    assert [med["productName"] for med in result["medications"]] == ["Etex bene", "Kerarian", "Tebacol"]
+    assert all(med["needsReview"] is True for med in result["medications"])

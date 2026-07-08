@@ -171,6 +171,30 @@ def _has_strong_med_name_signal(value: str) -> bool:
         return True
     return len(stripped) >= 6 and bool(re.search(r"[A-Za-zÀ-ỹ]", stripped))
 
+def _has_unclosed_parenthesis(value: str) -> bool:
+    return value.count("(") > value.count(")")
+
+def _is_medication_name_continuation(value: str, current_name: str) -> bool:
+    stripped = value.strip(" :-")
+    key = _ascii_lower(stripped)
+    if len(stripped) < 4 or not re.search(r"[a-z]", key):
+        return False
+    if _looks_like_admin_or_date_line(stripped) or _is_stop_text(stripped):
+        return False
+    if _is_dose_text(stripped) or _is_unit_text(stripped) or _is_item_number_text(stripped) or _is_noise_line(stripped):
+        return False
+
+    ingredient_tokens = {
+        "acid", "alpha", "aluminium", "aluminum", "aluminometasilicate", "amylase", "arginine",
+        "beta", "bicarbonate", "calcium", "cao", "enzyme", "esomeprazol", "esomeprazole",
+        "hydrochloride", "hydrocloride", "hydroxide", "hydroxyd", "magnesi", "magnesium",
+        "maleate", "nhom", "protease", "scopolia", "sucralfat", "sucralfate", "trimebutine",
+    }
+    words = set(key.split())
+    has_ingredient_signal = bool(words & ingredient_tokens)
+    has_punctuation_signal = any(mark in stripped for mark in [",", ")", ";", "/"])
+    return has_ingredient_signal or has_punctuation_signal or (_has_unclosed_parenthesis(current_name) and len(key.split()) >= 2)
+
 def _is_person_name(s: str) -> bool:
     """Kiểm tra chuỗi có phải họ tên người không."""
     s = s.strip()
@@ -842,6 +866,11 @@ def _extract_numbered_line_medications_v2(lines: List[str]) -> List[Dict[str, An
             parsed_unit = _canonical_unit(current)
             if parsed_unit:
                 med["unit"] = parsed_unit
+                j += 1
+                continue
+
+            if _is_medication_name_continuation(current, str(med.get("productName") or "")):
+                med["productName"] = f'{med["productName"]} {current}'.strip()
                 j += 1
                 continue
 
