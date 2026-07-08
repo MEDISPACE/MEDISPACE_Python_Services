@@ -409,7 +409,7 @@ def _merge_medications(traditional_meds: List[Dict[str, Any]], vision_meds: List
             merged.append(item)
 
     for vision in vision_meds:
-        if id(vision) not in used_vision and not _weak_noise_medication(vision):
+        if id(vision) not in used_vision and not _weak_noise_medication(vision) and not _duplicate_medication_name(vision, merged):
             item = dict(vision)
             item["needsReview"] = True
             item["reviewReason"] = "only_vision"
@@ -561,6 +561,30 @@ def _quantity_conflict(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     return left.get("quantity") is not None and right.get("quantity") is not None and left.get("quantity") != right.get("quantity")
 
 
+def _duplicate_medication_name(candidate: Dict[str, Any], existing_meds: List[Dict[str, Any]]) -> bool:
+    candidate_key = _normalize_text_key(str(candidate.get("productName") or ""))
+    if not candidate_key:
+        return True
+
+    candidate_tokens = _significant_name_tokens(candidate_key)
+    for existing in existing_meds:
+        existing_key = _normalize_text_key(str(existing.get("productName") or ""))
+        if not existing_key:
+            continue
+        if candidate_key == existing_key or candidate_key in existing_key or existing_key in candidate_key:
+            return True
+        existing_tokens = _significant_name_tokens(existing_key)
+        if candidate_tokens and candidate_tokens.issubset(existing_tokens):
+            return True
+        if existing_tokens and existing_tokens.issubset(candidate_tokens) and len(existing_tokens) >= 2:
+            return True
+        if _similarity(candidate_key, existing_key) >= 0.72:
+            return True
+    return False
+
+def _significant_name_tokens(value: str) -> set[str]:
+    return {token for token in value.split() if len(token) >= 3 or any(ch.isdigit() for ch in token)}
+
 def _weak_noise_medication(med: Dict[str, Any]) -> bool:
     name = str(med.get("productName") or "").strip()
     if _is_medication_header_noise(name):
@@ -586,6 +610,23 @@ def _is_medication_header_noise(name: Any) -> bool:
         "tên thuốc hàm lượng",
         "danh sach thuoc",
         "danh sách thuốc",
+        "thong tin benh nhan",
+        "thông tin bệnh nhân",
+        "benh nhan",
+        "bệnh nhân",
+        "ho ten",
+        "họ tên",
+        "ten",
+        "tên",
+        "dia chi",
+        "địa chỉ",
+        "chan doan",
+        "chẩn đoán",
+        "diagnosis",
+        "luu y",
+        "lưu ý",
+        "ghi chu",
+        "ghi chú",
         "dvt",
         "don vi",
         "đơn vị",

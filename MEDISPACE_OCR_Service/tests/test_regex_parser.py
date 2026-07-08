@@ -302,6 +302,31 @@ def test_merge_filters_vision_header_noise_and_pairs_weak_traditional_name() -> 
     assert merged["medications"][2]["instructions"] == "xoa lưng đau"
     assert merged["medications"][2]["reviewReason"] == "split_from_embedded_numbered_instruction"
 
+def test_merge_filters_administrative_vision_noise_and_duplicate_names() -> None:
+    traditional = {
+        "medications": [
+            {"productName": "YESOM 40 40mg (Esomeprazol 40mg)", "quantity": 63, "unit": "viên"},
+            {"productName": "BIOCID MH 3.542g", "quantity": 21, "unit": "chai"},
+        ]
+    }
+    vision = {
+        "medications": [
+            {"productName": "Thông tin bệnh nhân", "confidence": "low"},
+            {"productName": "Tên", "confidence": "low"},
+            {"productName": "Địa chỉ", "confidence": "low"},
+            {"productName": "Chẩn đoán", "confidence": "low"},
+            {"productName": "YESOM 40 mg", "confidence": "low"},
+            {"productName": "BIOCID MH 3.5+2g", "confidence": "low"},
+        ]
+    }
+
+    merged, _quality = merge_candidates(traditional, vision)
+
+    assert [med["productName"] for med in merged["medications"]] == [
+        "YESOM 40 40mg (Esomeprazol 40mg)",
+        "BIOCID MH 3.542g",
+    ]
+
 
 def test_donthuoc_jpg_raw_ocr_keeps_all_medications_and_age() -> None:
     raw_text = """
@@ -474,3 +499,19 @@ Các loại thuốc này được kê với liều lượng cụ thể.
 
     assert [med["productName"] for med in result["medications"]] == ["Etex bene", "Kerarian", "Tebacol"]
     assert all(med["needsReview"] is True for med in result["medications"])
+
+def test_vision_freeform_fallback_ignores_notes_and_trims_usage_tail() -> None:
+    reading = """
+* Etex beneules 80mg x nổ/4 ngày
+* Kerian 60mg x nổ/2 ngày
+* Tebecerol 60mg x nổ/2 ngày
+* (Lưu ý: uống sau ăn)
+"""
+
+    result = _extract_medications_from_freeform(reading)
+
+    assert [med["productName"] for med in result["medications"]] == [
+        "Etex beneules 80mg",
+        "Kerian 60mg",
+        "Tebecerol 60mg",
+    ]

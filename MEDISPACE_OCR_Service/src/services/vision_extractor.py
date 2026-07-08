@@ -244,17 +244,19 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
         "lieu luong", "liều lượng", "cach dung", "cách dùng", "loai tai lieu",
         "loại tài liệu", "mo ta", "mô tả", "dua tren", "dựa trên", "don thuoc",
         "đơn thuốc", "cac thuoc", "các thuốc", "san pham", "sản phẩm",
+        "ghi chu", "ghi chú", "thong tin", "thông tin", "chan doan", "chẩn đoán",
     )
 
     def clean_name(value: str) -> str:
         value = re.sub(r"^[\s\-*•]+", "", value.strip())
         value = re.sub(r"^\d+[\.)]\s*", "", value)
-        value = value.replace("**", "").replace("__", "").strip(" :-–—\t")
+        value = value.replace("**", "").replace("__", "").strip(" ()[]{}:-–—\t")
         if ":" in value:
             value = value.split(":", 1)[0].strip(" :-–—\t")
         value = re.sub(r"^c[oó]\s+th[eể]\s+l[aà]\s+", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s+x\s+.*(?:ng[aà]y|l[aầ]n|n[oổ]|vi[eê]n|g[oó]i|chai|ống|ong)\b.*$", "", value, flags=re.IGNORECASE)
         value = re.split(r"\s+\(.*", value, maxsplit=1)[0].strip(" :-–—\t") if "(" in value else value
-        return value.strip()
+        return value.strip(" ()[]{}:-–—\t")
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -273,6 +275,9 @@ def _extract_medications_from_freeform(reading: str) -> Dict[str, Any]:
 
         name = clean_name(candidate)
         if not name or len(name) < 3:
+            continue
+        name_key = re.sub(r"^\W+|\W+$", "", re.sub(r"\s+", " ", name.lower())).strip()
+        if any(name_key.startswith(prefix) for prefix in stop_prefixes):
             continue
         if len(name.split()) > 6:
             continue
