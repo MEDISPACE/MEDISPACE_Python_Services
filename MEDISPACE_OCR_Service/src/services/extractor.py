@@ -17,6 +17,7 @@ Cấu hình qua .env:
 import os
 import time
 import json
+import re
 import requests
 from dotenv import load_dotenv
 
@@ -156,7 +157,7 @@ def _extract_with_custom_api(raw_text: str) -> dict:
             }
         ],
         "temperature": 0.0,
-        "max_tokens": 2048,
+        "max_tokens": int(os.getenv("CUSTOM_LLM_MAX_TOKENS", "4096")),
         "stream": False,
         "response_format": {"type": "json_object"}
     }
@@ -185,7 +186,7 @@ def _extract_with_custom_api(raw_text: str) -> dict:
             lines = response_text.split("\n")
             response_text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-        result = json.loads(response_text)
+        result = _parse_llm_json_response(response_text)
         print(f"[Extractor] ✅ Custom LLM thành công! Confidence: {result.get('confidence', 'unknown')}")
         return result
 
@@ -201,11 +202,65 @@ def _extract_with_custom_api(raw_text: str) -> dict:
         print(f"[Extractor] ❌ Lỗi parse JSON từ Custom LLM: {e}")
         raw_preview = response_text[:300] if 'response_text' in locals() and response_text else "(empty)"
         print(f"[Extractor] Raw response: {raw_preview}")
+        if 'response_text' in locals() and response_text:
+            repaired = _repair_llm_json_response(response_text, endpoint, model_name, headers)
+            if repaired:
+                return repaired
         return _empty_result(f"Lỗi parse JSON (Custom LLM): {str(e)}")
     except Exception as e:
         print(f"[Extractor] ❌ Lỗi khi gọi Custom LLM API: {e}")
         return _empty_result(f"Lỗi hệ thống Custom LLM: {str(e)}")
 
+
+def _strip_markdown_json(text: str) -> str:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    return text.strip()
+
+def _parse_llm_json_response(response_text: str) -> dict:
+    text = _strip_markdown_json(response_text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+def _repair_llm_json_response(response_text: str, endpoint: str, model_name: str, headers: dict) -> dict | None:
+    repair_prompt = f"""Repair the following malformed JSON into one valid JSON object matching the prescription schema.
+Return JSON only, no markdown, no explanation. Preserve all visible values; do not add new medicines.
+
+Malformed JSON/text:
+{response_text[:6000]}
+"""
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "You repair malformed JSON. Return strict JSON only."},
+            {"role": "user", "content": repair_prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": int(os.getenv("CUSTOM_LLM_REPAIR_MAX_TOKENS", os.getenv("CUSTOM_LLM_MAX_TOKENS", "4096"))),
+        "stream": False,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        timeout = int(os.getenv("CUSTOM_LLM_REPAIR_TIMEOUT_SECONDS", "90"))
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        choices = response.json().get("choices", [])
+        if not choices:
+            return None
+        repaired_text = choices[0].get("message", {}).get("content", "").strip()
+        result = _parse_llm_json_response(repaired_text)
+        print("[Extractor] Custom LLM JSON repair succeeded")
+        return result
+    except Exception as repair_error:
+        print(f"[Extractor] Custom LLM JSON repair failed: {repair_error}")
+        return None
 
 def _empty_result(error_msg: str) -> dict:
     """Trả về cấu trúc rỗng khi có lỗi."""

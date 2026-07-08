@@ -101,6 +101,7 @@ def crop_image_by_box(image: np.ndarray, box) -> np.ndarray:
         height_b = np.linalg.norm(tl - bl)
         max_width = int(max(width_a, width_b))
         max_height = int(max(height_a, height_b))
+        padding = max(4, min(16, int(round(max_height * 0.18))))
 
         if max_width >= 2 and max_height >= 2:
             dst = np.array(

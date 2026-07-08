@@ -1280,6 +1280,16 @@ class PharmacyAgent:
                 streaming=False,
             )
 
+        if classification == "image_only":
+            logger.warning("[PharmacyAgent] image_only intent but image_url is missing")
+            return {
+                "reply": "Mình chưa nhận được ảnh trong yêu cầu này. Bạn vui lòng gửi lại ảnh rõ nét để mình có thể đọc và phân tích nhé.",
+                "classification": "image_only_triage",
+                "is_escalated": False,
+                "products_suggested": [],
+                "suggested_questions": ["Gửi lại ảnh đơn thuốc", "Kết nối Dược sĩ Medispace"],
+            }
+
         # Các intent được xử lý bằng prefilter cứng (không gọi LLM)
         hard_prefilter_map = {
             'too_long':             (TOO_LONG_RESPONSE,       False),
@@ -1411,6 +1421,18 @@ class PharmacyAgent:
                 context_data=context_data,
             ):
                 yield chunk
+            return
+
+        if classification == "image_only":
+            logger.warning("[PharmacyAgent Stream] image_only intent but image_url is missing")
+            yield json.dumps({
+                "type": "done",
+                "reply": "Mình chưa nhận được ảnh trong yêu cầu này. Bạn vui lòng gửi lại ảnh rõ nét để mình có thể đọc và phân tích nhé.",
+                "classification": "image_only_triage",
+                "is_escalated": False,
+                "products_suggested": [],
+                "suggested_questions": ["Gửi lại ảnh đơn thuốc", "Kết nối Dược sĩ Medispace"],
+            }, ensure_ascii=False) + "\n"
             return
 
         hard_prefilter_map = {

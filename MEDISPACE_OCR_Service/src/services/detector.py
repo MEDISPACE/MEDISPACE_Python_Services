@@ -5,6 +5,7 @@ Nhiệm vụ: Tìm ra vị trí (bounding boxes) của các vùng chữ trong �
 """
 import cv2
 import numpy as np
+import os
 from paddleocr import PaddleOCR
 
 
@@ -70,6 +71,33 @@ def get_paddle_ocr():
     return _paddle_ocr
 
 
+def _detection_confidence_threshold() -> float:
+    try:
+        return float(os.getenv("PADDLE_OCR_MIN_CONFIDENCE", "0.35"))
+    except (TypeError, ValueError):
+        return 0.35
+
+
+def detect_text_regions_with_image(image: np.ndarray) -> tuple[list, np.ndarray]:
+    """Detect boxes and return the exact preprocessed image those boxes belong to."""
+    processed_image = preprocess_for_detection(image)
+    ocr = get_paddle_ocr()
+    result = ocr.ocr(processed_image, cls=True)
+
+    if not result or result[0] is None:
+        return [], processed_image
+
+    threshold = _detection_confidence_threshold()
+    boxes = []
+    for line in result[0]:
+        box = line[0]
+        confidence = line[1][1]
+        if confidence >= threshold:
+            boxes.append(box)
+
+    return boxes, processed_image
+
+
 def detect_text_regions(image: np.ndarray) -> list:
     """
     Phát hiện các vùng chứa chữ trong ảnh.
@@ -95,7 +123,7 @@ def detect_text_regions(image: np.ndarray) -> list:
         # line = [box_coordinates, (text, confidence)]
         box = line[0]
         confidence = line[1][1]
-        if confidence > 0.5:
+        if confidence >= _detection_confidence_threshold():
             boxes.append(box)
 
     return boxes

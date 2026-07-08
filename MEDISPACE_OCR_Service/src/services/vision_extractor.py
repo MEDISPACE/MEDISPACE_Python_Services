@@ -267,13 +267,13 @@ def extract_prescription_from_image(file_bytes: bytes, mime_type: str = "image/j
     base_url = os.getenv("CUSTOM_LLM_BASE_URL", "https://llm.datateam.space").rstrip("/")
     model_name = os.getenv("VISION_LLM_MODEL") or os.getenv("CUSTOM_LLM_MODEL", "gemma-4-e4b-it.gguf")
     api_key = os.getenv("CUSTOM_LLM_API_KEY", "")
-    timeout = _env_int("VISION_LLM_TIMEOUT_SECONDS", 30)
-    retries = max(1, _env_int("VISION_LLM_RETRIES", 1))
+    timeout = _env_int("VISION_LLM_TIMEOUT_SECONDS", 45)
+    retries = max(1, _env_int("VISION_LLM_RETRIES", 2))
     retry_backoff = max(0.0, _env_float("VISION_LLM_RETRY_BACKOFF_SECONDS", 1.5))
     strategy = os.getenv("VISION_EXTRACTION_STRATEGY", "structured").strip().lower()
     if strategy not in {"direct", "structured", "two_stage"}:
         strategy = "structured"
-    allow_structured_fallback = os.getenv("VISION_STRUCTURED_FALLBACK_TWO_STAGE", "false").lower() == "true"
+    allow_structured_fallback = os.getenv("VISION_STRUCTURED_FALLBACK_TWO_STAGE", "true").lower() == "true"
 
     prepared_bytes, prepared_mime_type, image_meta = prepare_image_for_vision(file_bytes, mime_type)
     image_b64 = base64.b64encode(prepared_bytes).decode("ascii")
@@ -300,7 +300,7 @@ def extract_prescription_from_image(file_bytes: bytes, mime_type: str = "image/j
             },
         ],
         "temperature": 0.0,
-        "max_tokens": _env_int("VISION_LLM_MAX_TOKENS", 2048),
+        "max_tokens": _env_int("VISION_LLM_MAX_TOKENS", 4096),
         "stream": False,
         "response_format": {"type": "json_object"},
     }
@@ -321,7 +321,7 @@ def extract_prescription_from_image(file_bytes: bytes, mime_type: str = "image/j
             },
         ],
         "temperature": 0.0,
-        "max_tokens": _env_int("VISION_LLM_MAX_TOKENS", 2048),
+        "max_tokens": _env_int("VISION_LLM_MAX_TOKENS", 4096),
         "stream": False,
         "response_format": {"type": "json_object"},
     }
@@ -365,7 +365,7 @@ def extract_prescription_from_image(file_bytes: bytes, mime_type: str = "image/j
                 {"role": "user", "content": VISION_JSON_FROM_READING_PROMPT.format(freeform_reading=reading)},
             ],
             "temperature": 0.0,
-            "max_tokens": _env_int("VISION_LLM_MAX_TOKENS", 2048),
+            "max_tokens": _env_int("VISION_LLM_MAX_TOKENS", 4096),
             "stream": False,
             "response_format": {"type": "json_object"},
         }

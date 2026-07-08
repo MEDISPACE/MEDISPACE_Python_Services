@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from src.services.detector import detect_text_regions, get_paddle_ocr
+from src.services.detector import detect_text_regions_with_image, get_paddle_ocr
 from src.services.recognizer import extract_full_text, get_vietocr, move_vietocr_to_cpu, move_vietocr_to_gpu
 from src.services.extractor import extract_prescription_info
 from src.services.quality import merge_candidates, normalize_prescription_data, score_candidate
@@ -155,7 +155,7 @@ def attach_image_quality(response: dict, image_quality: dict) -> dict:
 def run_traditional_pipeline(image: np.ndarray, filename: str, allow_llm_fallback: bool = True) -> dict:
     print(f"[Pipeline] Traditional OCR start: {filename} ({image.shape})")
     t1_start = time.time()
-    boxes = detect_text_regions(image)
+    boxes, ocr_image = detect_text_regions_with_image(image)
     t1_end = time.time()
     print(f"[Pipeline] Traditional found {len(boxes)} text boxes in {t1_end - t1_start:.2f}s")
 
@@ -176,7 +176,7 @@ def run_traditional_pipeline(image: np.ndarray, filename: str, allow_llm_fallbac
         }
 
     t2_start = time.time()
-    raw_text = extract_full_text(image, boxes)
+    raw_text = extract_full_text(ocr_image, boxes)
     t2_end = time.time()
     print(f"[Pipeline] Traditional raw text length: {len(raw_text)} in {t2_end - t2_start:.2f}s")
 
@@ -273,11 +273,11 @@ def build_ocr_response(
 
 
 def run_parallel_pipeline(image: np.ndarray, file_bytes: bytes, filename: str, content_type: str, mode: str, started_at: float) -> dict:
-    vision_timeout = int(os.getenv("VISION_LLM_TIMEOUT_SECONDS", "30"))
+    vision_timeout = int(os.getenv("VISION_LLM_TIMEOUT_SECONDS", "45"))
     vision_strategy = os.getenv("VISION_EXTRACTION_STRATEGY", "structured").strip().lower()
     default_branch_timeout = vision_timeout * (2 if vision_strategy == "two_stage" else 1) + 5
     timeout = int(os.getenv("VISION_BRANCH_TIMEOUT_SECONDS", str(default_branch_timeout)))
-    response_budget = int(os.getenv("OCR_RESPONSE_BUDGET_SECONDS", "45"))
+    response_budget = int(os.getenv("OCR_RESPONSE_BUDGET_SECONDS", "75"))
     if mode != "parallel_benchmark":
         timeout = min(timeout, response_budget)
     include_candidates = mode == "parallel_benchmark" or os.getenv("OCR_INCLUDE_CANDIDATES", "false").lower() == "true"
@@ -459,7 +459,7 @@ async def extract_prescription(file: UploadFile = File(...), mode: str = Form("t
         # Trạm 1: PaddleOCR
         print("[Pipeline] Trạm 1: PaddleOCR phát hiện vùng chữ...")
         t1_start = time.time()
-        boxes = detect_text_regions(image)
+        boxes, ocr_image = detect_text_regions_with_image(image)
         t1_end = time.time()
         print(f"[Pipeline] Tìm thấy {len(boxes)} vùng chữ (Xong Trạm 1 mất: {t1_end - t1_start:.2f}s)")
 
@@ -474,7 +474,7 @@ async def extract_prescription(file: UploadFile = File(...), mode: str = Form("t
         # Trạm 2: VietOCR
         print("[Pipeline] Trạm 2: VietOCR nhận diện text...")
         t2_start = time.time()
-        raw_text = extract_full_text(image, boxes)
+        raw_text = extract_full_text(ocr_image, boxes)
         t2_end = time.time()
         print(f"[Pipeline] Text ({len(raw_text)} ký tự - Xong Trạm 2 mất: {t2_end - t2_start:.2f}s):\n{raw_text[:400]}")
 
@@ -538,11 +538,11 @@ async def extract_text_only(file: UploadFile = File(...)):
         image = read_image_from_upload(file_bytes)
         
         t1_start = time.time()
-        boxes = detect_text_regions(image)
+        boxes, ocr_image = detect_text_regions_with_image(image)
         t1_end = time.time()
         
         t2_start = time.time()
-        raw_text = extract_full_text(image, boxes)
+        raw_text = extract_full_text(ocr_image, boxes)
         t2_end = time.time()
         
         return {

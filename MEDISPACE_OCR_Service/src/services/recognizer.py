@@ -4,6 +4,7 @@ Trạm 2: Text Recognition bằng VietOCR.
 Nhiệm vụ: Đọc chính xác chữ Tiếng Việt từ các vùng ảnh đã được cắt.
 """
 import cv2
+import os
 import torch
 import numpy as np
 from PIL import Image
@@ -73,9 +74,9 @@ def get_vietocr():
         print(f"[Recognizer] Dang khoi tao VietOCR model tren {device.upper()}...")
         config = Cfg.load_config_from_name('vgg_transformer')
         config['device'] = device
-        config['predictor']['beamsearch'] = False  # Tắt để chạy nhanh hơn
+        config['predictor']['beamsearch'] = os.getenv("VIETOCR_BEAMSEARCH", "true").lower() != "false"
         _vietocr_detector = Predictor(config)
-        print(f"[Recognizer] VietOCR đã sẵn sàng! (device={device})")
+        print(f"[Recognizer] VietOCR đã sẵn sàng! (device={device}, beamsearch={config['predictor']['beamsearch']})")
     return _vietocr_detector
 
 

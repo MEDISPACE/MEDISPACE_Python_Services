@@ -101,6 +101,232 @@ Uống sáng chiều
     assert all(med["unit"] == "viên" for med in medications)
 
 
+def test_patient_age_label_is_not_treated_as_birth_year() -> None:
+    raw_text = """
+Họ tên: Nguyễn Văn A
+Phái: NamTuổi: 49
+"""
+
+    result = parse_with_regex(raw_text)
+
+    assert result["patientAge"] == "49"
+
+
+def test_parenthesized_number_with_space_starts_medication() -> None:
+    raw_text = """
+(2 SUCRATE GEL (Sucralfate 1g) 30 gói
+Uống trước ăn ngày 2 lần
+"""
+
+    medications = parse_with_regex(raw_text)["medications"]
+
+    assert [med["productName"] for med in medications] == ["SUCRATE GEL (Sucralfate 1g)"]
+    assert medications[0]["quantity"] == 30
+    assert medications[0]["unit"] == "gói"
+
+
+def test_bhyt_table_layout_without_item_numbers_extracts_medications() -> None:
+    raw_text = """
+STT
+Tên thuốc/hàm lượng
+ĐVT
+Số lượng
+Penicilin(dưới dạng Phenoxymethylpenicilin Kali)
+Viên
+30
+Paracetamol 500mg
+Viên
+20
+Lời dặn:
+"""
+
+    medications = parse_with_regex(raw_text)["medications"]
+
+    assert [med["productName"] for med in medications] == [
+        "Penicilin(dưới dạng Phenoxymethylpenicilin Kali)",
+        "Paracetamol 500mg",
+    ]
+    assert [med["quantity"] for med in medications] == [30, 20]
+    assert [med["unit"] for med in medications] == ["viên", "viên"]
+
+
+def test_interleaved_unit_quantity_layout_extracts_structured_medications() -> None:
+    raw_text = """
+Chan doan: Viem da
+Thuoc dung:
+Tube
+1
+Lalise Cleanser SRM Da Dau 100g
+Rua mat sang, toi.
+2
+Genfluid
+lo
+1
+Lau sang, toi truoc khi boi thuoc
+OSAINE SPF50
+tuyp
+1
+Boi sang va trua ca mat
+UPHAXIME cefixim 200MG
+VIEN
+20
+Uong 1 vien sang, 1 vien toi sau an
+Ngay 24 thang 7 nam 2017
+Bac si dieu tri
+"""
+
+    medications = parse_with_regex(raw_text)["medications"]
+
+    assert [med["productName"] for med in medications] == [
+        "Lalise Cleanser SRM Da Dau 100g",
+        "Genfluid",
+        "OSAINE SPF50",
+        "UPHAXIME cefixim 200MG",
+    ]
+    assert [med["quantity"] for med in medications] == [1, 1, 1, 20]
+    assert [med["unit"] for med in medications] == ["tube", "l\u1ecd", "tu\u00fdp", "vi\u00ean"]
+
+
+def test_date_and_order_note_lines_are_not_medications() -> None:
+    raw_text = """
+DON THUOC
+Chan doan
+Roi loan TK thuc vat
+Sang uong 1 vien, chieu uong 1 vien, sau an
+7/4/21: don W
+29/10/2020
+Bac si chuyen khoa II
+"""
+
+    medications = parse_with_regex(raw_text)["medications"]
+
+    assert medications == []
+
+
+def test_weak_handwriting_noise_lines_are_not_medications() -> None:
+    raw_text = """
+DON THUOC
+Benh nhan:
+Chan doan
+R8i duan TK Thik van
+Cideolu ogur
+Nemy
+Xo vien ? thi
+moss
+Sang uong 1 vien, chieu uong 1 vien, sau an
+Nemva
+2
+Sang uong 1 vien, chieu uong 1 vien, sau an
+xau vien
+Sang uong 1 vien, chieu uong 1 vien, sau an
+H/4/21: don W
+Ngay 29, thang 4 Nam 21
+Bac si chuyen khoa II
+"""
+
+    medications = parse_with_regex(raw_text)["medications"]
+
+    assert medications == []
+
+
+def test_prescription_date_day_is_not_patient_age() -> None:
+    raw_text = """
+Chan doan: Viem da
+Ngay 24 thang 7 nam 2017
+Thuoc dung:
+1 Paracetamol 500mg 20 vien
+"""
+
+    result = parse_with_regex(raw_text)
+
+    assert result["patientAge"] is None
+
+
+def test_note_containing_prescription_word_does_not_reset_medication_section() -> None:
+    raw_text = """
+Chan doan: Viem da
+Thuoc dung:
+Tube
+1
+Halox
+Boi mong dung mun trung ca
+Loi dan:
+Quy khach vui long mang don thuoc khi kham lai
+"""
+
+    medications = parse_with_regex(raw_text)["medications"]
+
+    assert [med["productName"] for med in medications] == ["Halox"]
+
+
+def test_donthuoc_jpg_raw_ocr_keeps_all_medications_and_age() -> None:
+    raw_text = """
+SỐ TIBINH
+BỆNH THỊ THỊ MINH
+Số nò sơn
+Phòng Khám: Pich V.107
+701bd.1407A7744
+0:55
+9
+đơn thuốc
+Ngày kham
+Ngày 25 tháng 09 năm 2014
+Đối tượng: Thu phí-KTC
+HỌ TÊN: TRẦN TRUNG
+Phái: NamTuổi: 49
+Địa chì: Xã Bảo Bình, Huyện Cẩm Mỹ, Đồng Nai
+Chản đoán: Viêm dạ dày cấp khác
+1.YESOM 40 40mg (Esomeprazol 40mg)
+63
+Viên
+(2 SUCRATE GEL (Sucralfate 19 (goi)
+Ngày uống 3 lần, mỗi lần 1 Viên
+Ngày uống 3 lần, mỗi lần 1Gỗi
+63
+GÓI
+3. ARTHUR (Trimebutine 200)
+Ngày uống 3 lần, mỗi lần 1 Viên
+63
+Viên
+4,PAZE (magnesi aluminometasilicate ,na
+bicarbonate,cao scopolia, alpha amylase,beta
+63
+Viên
+Ceet
+amuylase, protease)
+Ngày uống 3 lần, mỗi lần 1 Viên
+5. BIOCID MH 3.542g (Nhôm Hydroxide 3.542g.
+Chai
+Magnesi Hydroxide 100ml
+21
+Ngày uống 3 lần, mỗi lần 1/3 Chai
+6, DIGLUMISAN (L-Arginine Hydrocloride 1000mg)
+ỐNG
+Ngày uống 3 lần, mỗi lần 1 ONG
+63
+Cộng khoản: 6
+25/09/2014
+Bác sĩ điều trị
+Lời dăn
+Tái khám: 16/10/2014
+Nguyễn Văn Hùng
+"""
+
+    result = parse_with_regex(raw_text)
+    medications = result["medications"]
+
+    assert result["patientAge"] == "49"
+    assert [med["productName"] for med in medications] == [
+        "YESOM 40 40mg (Esomeprazol 40mg)",
+        "SUCRATE GEL (Sucralfate 19 (goi)",
+        "ARTHUR (Trimebutine 200)",
+        "PAZE (magnesi aluminometasilicate ,na",
+        "BIOCID MH 3.542g (Nhôm Hydroxide 3.542g.",
+        "DIGLUMISAN (L-Arginine Hydrocloride 1000mg)",
+    ]
+    assert [med["quantity"] for med in medications] == [63, 63, 63, 63, 21, 63]
+    assert [med["unit"] for med in medications] == ["viên", "gói", "viên", "viên", "chai", "ống"]
+
 def test_noisy_single_traditional_candidate_is_not_usable() -> None:
     raw_text = """
 03010000099
