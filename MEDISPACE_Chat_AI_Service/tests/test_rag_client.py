@@ -53,6 +53,7 @@ class TestExtractSearchQuery:
         assert "thanh nhiet" in result
         assert "mat gan" in result
         assert "giai doc gan" in result
+        assert "nóng" not in result
 
 
 # ════════════════════════════════════════════════════════════════

@@ -89,8 +89,11 @@ def _normalize_ascii(value: str) -> str:
 
 def _expand_semantic_query(query: str) -> str:
     """
-    Add domain synonyms for Vietnamese symptom phrases whose literal wording
-    is often too ambiguous for embedding models (e.g. "nong trong nguoi").
+    Map ambiguous Vietnamese symptom phrases to pharmacy-domain terms.
+
+    Keeping the literal words for "nong trong nguoi" makes BM25 over-rank
+    heat-related medical supplies, so matched expansions become the search
+    query instead of being appended to the original phrase.
     """
     normalized = _normalize_ascii(query)
     additions: list[str] = []
@@ -105,7 +108,7 @@ def _expand_semantic_query(query: str) -> str:
     for expansion in additions:
         if expansion not in normalized and expansion not in extra_phrases:
             extra_phrases.append(expansion)
-    return f"{query} {' '.join(extra_phrases)}" if extra_phrases else query
+    return " ".join(extra_phrases) if extra_phrases else query
 
 def _append_csv_value(value: str, extra: str) -> str:
     return f"{value},{extra}" if value else extra
