@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from src.rag.typesense_client import (
     _extract_search_query,
     _expand_semantic_query,
+    _normalize_ascii,
     search_products_for_rag,
     INTENT_RAG_CONFIG,
 )
@@ -50,9 +51,10 @@ class TestExtractSearchQuery:
 
     def test_expands_nong_trong_nguoi_to_liver_support_terms(self):
         result = _expand_semantic_query("Tôi cảm thấy nóng trong người")
-        assert "thanh nhiet" in result
-        assert "mat gan" in result
-        assert "giai doc gan" in result
+        normalized = _normalize_ascii(result)
+        assert "thanh nhiet" in normalized
+        assert "mat gan" in normalized
+        assert "giai doc gan" in normalized
         assert "nóng" not in result
 
 

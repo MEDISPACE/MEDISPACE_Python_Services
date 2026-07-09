@@ -39,11 +39,11 @@ EMBEDDING_FIELD = "embedding"
 SEMANTIC_QUERY_EXPANSIONS: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         ("nong trong nguoi", "nong nguoi", "bi nong trong", "noi mun nong"),
-        "thanh nhiet mat gan giai doc gan chuc nang gan",
+        "thanh nhiệt mát gan giải độc gan chức năng gan",
     ),
     (
         ("mat gan", "giai doc gan", "thanh nhiet"),
-        "thanh nhiet mat gan giai doc gan chuc nang gan",
+        "thanh nhiệt mát gan giải độc gan chức năng gan",
     ),
 )
 
@@ -106,7 +106,8 @@ def _expand_semantic_query(query: str) -> str:
 
     extra_phrases = []
     for expansion in additions:
-        if expansion not in normalized and expansion not in extra_phrases:
+        normalized_expansion = _normalize_ascii(expansion)
+        if normalized_expansion not in normalized and expansion not in extra_phrases:
             extra_phrases.append(expansion)
     return " ".join(extra_phrases) if extra_phrases else query
 
