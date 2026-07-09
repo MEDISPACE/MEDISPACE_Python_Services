@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.rag.typesense_client import (
     _extract_search_query,
+    _expand_semantic_query,
     search_products_for_rag,
     INTENT_RAG_CONFIG,
 )
@@ -46,6 +47,12 @@ class TestExtractSearchQuery:
     def test_whitespace_trimmed(self):
         result = _extract_search_query("  Paracetamol  ", "general")
         assert result == result.strip()
+
+    def test_expands_nong_trong_nguoi_to_liver_support_terms(self):
+        result = _expand_semantic_query("Tôi cảm thấy nóng trong người")
+        assert "thanh nhiet" in result
+        assert "mat gan" in result
+        assert "giai doc gan" in result
 
 
 # ════════════════════════════════════════════════════════════════
@@ -168,6 +175,12 @@ class TestSearchProductsForRag:
                 assert result[0]["activeIngredients"] == "Paracetamol 500mg"
                 assert result[0]["indications"] == "Hạ sốt, giảm đau"
                 assert result[0]["requiresPrescription"] is False
+
+                params = mock_client.get.await_args.kwargs["params"]
+                assert "embedding" in params["query_by"].split(",")
+                assert len(params["query_by"].split(",")) == len(params["query_by_weights"].split(","))
+                assert len(params["query_by"].split(",")) == len(params["num_typos"].split(","))
+                assert len(params["query_by"].split(",")) == len(params["prefix"].split(","))
 
     async def test_returns_empty_list_on_empty_hits(self):
         """Typesense trả về hits rỗng → []."""

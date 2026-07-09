@@ -15,6 +15,7 @@ Schema Typesense (products collection):
 import os
 import httpx
 import logging
+import unicodedata
 from typing import Optional
 
 logger = logging.getLogger("chat_ai.rag")
@@ -33,19 +34,27 @@ _VECTOR_SEARCH_ENABLED = os.getenv("TYPESENSE_VECTOR_SEARCH", "true").lower() ==
 # Timeout ngắn — RAG nên fail fast để không block LLM call
 _TIMEOUT = httpx.Timeout(3.0, connect=2.0)
 
-# Intent → query strategy mapping
-# Mỗi intent có cách extract query và filter khác nhau
-#
-# Cải tiến BM25 (so với v1):
-#   - indications tăng weight vì user hay mô tả triệu chứng thay vì tên thuốc
-#   - num_typos per-field: tên thuốc cho typo cao (2), số liệu/category thấp (1)
-#   - prefix per-field: bật cho name/brandName (gõ chưa hết từ vẫn tìm được)
+EMBEDDING_FIELD = "embedding"
+
+SEMANTIC_QUERY_EXPANSIONS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("nong trong nguoi", "nong nguoi", "bi nong trong", "noi mun nong"),
+        "thanh nhiet mat gan giai doc gan chuc nang gan",
+    ),
+    (
+        ("mat gan", "giai doc gan", "thanh nhiet"),
+        "thanh nhiet mat gan giai doc gan chuc nang gan",
+    ),
+)
+
+
+
 INTENT_RAG_CONFIG: dict[str, dict] = {
     # Tư vấn OTC: ưu tiên theo triệu chứng + tên + thành phần
     "general": {
         "query_by":         "name,activeIngredients,indications,shortDescription,categoryName",
         "query_by_weights": "5,4,5,2,2",           # indications nâng 3→5: khớp triệu chứng
-        "num_typos":        "2,2,1,1,1",            # typo tolerance per-field
+        "num_typos":        "2,2,1,1,1",            # số lỗi chính tả từng field
         "prefix":           "true,false,false,false,false",  # prefix search cho name
         "filter_by":        "isActive:=true && requiresPrescription:=false && inStock:=true",
         "sort_by":          "_text_match:desc,rating:desc,reviewCount:desc",
@@ -54,7 +63,7 @@ INTENT_RAG_CONFIG: dict[str, dict] = {
     # Tìm kiếm sản phẩm: rộng hơn, bao gồm cả Rx, thêm brandName
     "product_search": {
         "query_by":         "name,activeIngredients,indications,shortDescription,categoryName,brandName",
-        "query_by_weights": "6,4,4,2,2,3",           # name+brandName cao hơn (user tìm cụ thể)
+        "query_by_weights": "6,4,4,2,2,3",           # trọng số ưu tiên name+brandName cao hơn (user tìm cụ thể)
         "num_typos":        "2,2,1,1,1,2",            # brandName typo cao (tên nước ngoài)
         "prefix":           "true,false,false,false,false,true",  # prefix cho name+brand
         "filter_by":        "isActive:=true && inStock:=true",
@@ -72,6 +81,78 @@ INTENT_RAG_CONFIG: dict[str, dict] = {
     # Prescription status: không cần RAG sản phẩm
     "prescription_status": None,
 }
+
+def _normalize_ascii(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", value or "")
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return normalized.replace("đ", "d").replace("Đ", "D").lower()
+
+def _expand_semantic_query(query: str) -> str:
+    """
+    Add domain synonyms for Vietnamese symptom phrases whose literal wording
+    is often too ambiguous for embedding models (e.g. "nong trong nguoi").
+    """
+    normalized = _normalize_ascii(query)
+    additions: list[str] = []
+    for triggers, expansion in SEMANTIC_QUERY_EXPANSIONS:
+        if any(trigger in normalized for trigger in triggers):
+            additions.append(expansion)
+
+    if not additions:
+        return query
+
+    extra_phrases = []
+    for expansion in additions:
+        if expansion not in normalized and expansion not in extra_phrases:
+            extra_phrases.append(expansion)
+    return f"{query} {' '.join(extra_phrases)}" if extra_phrases else query
+
+def _append_csv_value(value: str, extra: str) -> str:
+    return f"{value},{extra}" if value else extra
+
+def _enable_auto_embedding_query(params: dict, *, alpha: float, k: int, distance_threshold: float) -> None:
+    """
+    Typesense auto-embedding search requires the embedding field in query_by.
+    The empty vector in vector_query tells Typesense to embed `q` by itself.
+    """
+    query_by = str(params.get("query_by", ""))
+    fields = [field.strip() for field in query_by.split(",") if field.strip()]
+    if EMBEDDING_FIELD not in fields:
+        params["query_by"] = _append_csv_value(query_by, EMBEDDING_FIELD)
+
+        if params.get("query_by_weights"):
+            params["query_by_weights"] = _append_csv_value(str(params["query_by_weights"]), "1")
+        if params.get("num_typos") and "," in str(params["num_typos"]):
+            params["num_typos"] = _append_csv_value(str(params["num_typos"]), "0")
+        if params.get("prefix") and "," in str(params["prefix"]):
+            params["prefix"] = _append_csv_value(str(params["prefix"]), "false")
+
+    params["vector_query"] = (
+        f"{EMBEDDING_FIELD}:([], k:{k}, "
+        f"distance_threshold:{distance_threshold}, alpha:{alpha})"
+    )
+    params["exclude_fields"] = EMBEDDING_FIELD
+    params.pop("exhaustive_search", None)
+
+def _remove_last_csv_value(value: str) -> str:
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if parts and parts[-1] == EMBEDDING_FIELD:
+        parts.pop()
+    elif parts:
+        parts.pop()
+    return ",".join(parts)
+
+def _disable_auto_embedding_query(params: dict) -> None:
+    params.pop("vector_query", None)
+    params.pop("exclude_fields", None)
+    query_by = str(params.get("query_by", ""))
+    fields = [field.strip() for field in query_by.split(",") if field.strip()]
+    if fields and fields[-1] == EMBEDDING_FIELD:
+        fields.pop()
+        params["query_by"] = ",".join(fields)
+        for key in ("query_by_weights", "num_typos", "prefix"):
+            if params.get(key) and "," in str(params[key]):
+                params[key] = _remove_last_csv_value(str(params[key]))
 
 
 def _extract_search_query(message: str, intent: str) -> str:
@@ -137,7 +218,7 @@ async def search_products_for_rag(
         logger.warning("[RAG] TYPESENSE_API_KEY chưa được cấu hình — bỏ qua RAG")
         return []
 
-    query = _extract_search_query(message, intent)
+    query = _expand_semantic_query(_extract_search_query(message, intent))
     if not query:
         return []
 
@@ -169,8 +250,7 @@ async def search_products_for_rag(
     # k=20: vector search trả 20 candidates rồi Typesense RRF fusion với BM25
     # distance_threshold=0.85: loại kết quả về ngữ nghĩa quá xa
     if _VECTOR_SEARCH_ENABLED:
-        params["vector_query"]  = "embedding:([], k:20, distance_threshold:0.85, alpha:0.7)"
-        params["exclude_fields"] = "embedding"   # không trả vector 384-dim về
+        _enable_auto_embedding_query(params, alpha=0.7, k=20, distance_threshold=0.85)
 
     async def _run_search(search_params: dict) -> list[dict]:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -222,8 +302,7 @@ async def search_products_for_rag(
                 query[:50],
             )
             bm25_params = dict(params)
-            bm25_params.pop("vector_query", None)
-            bm25_params.pop("exclude_fields", None)
+            _disable_auto_embedding_query(bm25_params)
             try:
                 return await _run_search(bm25_params)
             except Exception as retry_error:
@@ -251,7 +330,7 @@ async def search_articles_for_rag(
     if not TYPESENSE_API_KEY:
         return []
 
-    query = message.strip()[:100]
+    query = _expand_semantic_query(message.strip()[:100])
     params = {
         "q":                query,
         "query_by":         "title,excerpt,content,tags",
@@ -268,8 +347,7 @@ async def search_articles_for_rag(
     # thường mapping với chủ đề bài viết theo ngữ nghĩa, không chỉ keyword
     # (VD: "cao huyết áp" → bài về tim mạch, giảm muối, tăng cường kali)
     if _VECTOR_SEARCH_ENABLED:
-        params["vector_query"]  = "embedding:([], k:10, distance_threshold:0.80, alpha:0.6)"
-        params["exclude_fields"] = "embedding"
+        _enable_auto_embedding_query(params, alpha=0.6, k=10, distance_threshold=0.80)
 
     async def _run_search(search_params: dict) -> list[dict]:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -310,8 +388,7 @@ async def search_articles_for_rag(
                 query[:40],
             )
             bm25_params = dict(params)
-            bm25_params.pop("vector_query", None)
-            bm25_params.pop("exclude_fields", None)
+            _disable_auto_embedding_query(bm25_params)
             try:
                 return await _run_search(bm25_params)
             except Exception as retry_error:
