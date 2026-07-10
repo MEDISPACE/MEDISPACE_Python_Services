@@ -104,6 +104,7 @@ DRUG_INFO_GENERAL_PATTERNS = [
 
 
 def classify_message(content: str) -> str:
+    #gửi ảnh không có text
     if not content or not content.strip():
         return 'image_only'
 
@@ -114,13 +115,16 @@ def classify_message(content: str) -> str:
     normalized = _normalize_text(lower)
     searchable = f"{lower} {normalized}"
 
+    # chào hỏi
     for pattern in GREETING_PATTERNS:
         if re.search(pattern, normalized, re.IGNORECASE):
             return 'greeting'
 
+    #khẩn cấp
     if any(_normalize_text(kw) in searchable for kw in EMERGENCY_KEYWORDS):
         return 'emergency'
 
+    #khủng hoảng tinh thần
     if any(_normalize_text(kw) in searchable for kw in MENTAL_HEALTH_KEYWORDS):
         return 'mental_health_crisis'
 
