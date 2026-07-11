@@ -28,6 +28,11 @@ MediSpace Backend
                Gemma via custom LLM API + Typesense RAG + AI guardrails
 ```
 
+## Authors
+
+- Tran Nguyen Quoc Bao
+- Nguyen Huu Thong
+
 ## 1. OCR Service
 
 Path: `MEDISPACE_OCR_Service`

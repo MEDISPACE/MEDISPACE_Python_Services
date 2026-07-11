@@ -4,6 +4,11 @@ MediSpace Python Services is the AI and machine-learning monorepo for the MediSp
 
 The services are designed to be called by the MediSpace Node.js backend and support OCR-assisted prescription processing, ML product recommendations, self-hosted/custom LLM workflows, Typesense-backed RAG, article AI assistance, and safer AI responses for pharmacy use cases.
 
+Authors:
+
+- Tran Nguyen Quoc Bao
+- Nguyen Huu Thong
+
 Suggested GitHub description:
 
 > FastAPI AI services for MediSpace: prescription OCR, ML recommendations, Gemma chat AI, Typesense RAG, guardrails, and article assistant workflows.
