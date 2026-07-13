@@ -45,6 +45,10 @@ SEMANTIC_QUERY_EXPANSIONS: tuple[tuple[tuple[str, ...], str], ...] = (
         ("mat gan", "giai doc gan", "thanh nhiet"),
         "thanh nhiệt mát gan giải độc gan chức năng gan",
     ),
+    (
+        ("mat nuoc", "thieu nuoc", "bu nuoc", "dien giai", "tieu chay mat nuoc"),
+        "oresol bù nước điện giải dung dịch bù nước chất điện giải",
+    ),
 )
 
 
@@ -270,6 +274,13 @@ async def search_products_for_rag(
             hits = data.get("hits", [])
             products = []
             for hit in hits:
+                if hit.get("text_match") == 0:
+                    logger.debug(
+                        "[RAG] Skip zero text_match hit for query='%s': %s",
+                        query[:50],
+                        hit.get("document", {}).get("name", ""),
+                    )
+                    continue
                 doc = hit.get("document", {})
                 products.append({
                     "mongoId":              doc.get("mongoId", ""),

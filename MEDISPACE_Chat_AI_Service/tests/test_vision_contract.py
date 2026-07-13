@@ -3,7 +3,7 @@ Regression tests for the chat image contract between FastAPI and PharmacyAgent.
 """
 
 import inspect
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -53,3 +53,40 @@ def test_process_final_reply_falls_back_to_rag_products_when_reply_mentions_none
             "requiresPrescription": False,
         }
     ]
+
+@pytest.mark.asyncio
+async def test_reply_search_augments_suggested_product_cards():
+    agent = PharmacyAgent()
+
+    with patch(
+        "src.agents.pharmacy_agent.search_products_for_rag",
+        new=AsyncMock(return_value=[
+            {
+                "mongoId": "oresol-1",
+                "name": "Oresol bù nước điện giải",
+                "price": 15000,
+                "slug": "oresol-bu-nuoc-dien-giai",
+                "imageUrl": "https://example.com/oresol.jpg",
+                "unit": "Gói",
+                "requiresPrescription": False,
+            }
+        ]),
+    ) as mock_search:
+        result = await agent._augment_suggested_products_from_reply(
+            "Bạn có thể cân nhắc Oresol để bù nước và điện giải.",
+            "general",
+            [],
+        )
+
+    assert result == [
+        {
+            "mongoId": "oresol-1",
+            "name": "Oresol bù nước điện giải",
+            "price": 15000,
+            "slug": "oresol-bu-nuoc-dien-giai",
+            "imageUrl": "https://example.com/oresol.jpg",
+            "unit": "Gói",
+            "requiresPrescription": False,
+        }
+    ]
+    assert mock_search.await_args.kwargs["intent"] == "general"

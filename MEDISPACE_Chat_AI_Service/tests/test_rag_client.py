@@ -57,6 +57,13 @@ class TestExtractSearchQuery:
         assert "giai doc gan" in normalized
         assert "nóng" not in result
 
+    def test_expands_mat_nuoc_to_oral_rehydration_terms(self):
+        result = _expand_semantic_query("Tôi bị mất nước sau tiêu chảy")
+        normalized = _normalize_ascii(result)
+        assert "oresol" in normalized
+        assert "dien giai" in normalized
+        assert "bu nuoc" in normalized
+
 
 # ════════════════════════════════════════════════════════════════
 # INTENT_RAG_CONFIG — Configuration mapping

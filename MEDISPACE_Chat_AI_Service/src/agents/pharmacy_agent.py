@@ -80,6 +80,58 @@ def _normalize_text(value: str) -> str:
     value = "".join(ch for ch in value if unicodedata.category(ch) != "Mn")
     return value.lower()
 
+def _merge_unique_products(base_products: list[dict], extra_products: list[dict], limit: int) -> list[dict]:
+    merged = []
+    seen: set[str] = set()
+
+    for product in base_products + extra_products:
+        mongo_id = product.get("mongoId") or ""
+        slug = product.get("slug") or ""
+        key = mongo_id or slug or product.get("name") or ""
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(product)
+        if len(merged) >= limit:
+            break
+
+    return merged
+
+def _extract_reply_search_query(reply: str) -> str:
+    """
+    Trích một query ngắn từ reply của LLM để search bổ sung sản phẩm.
+
+    Ưu tiên các câu có dấu hiệu sản phẩm/symptom rõ hơn user message gốc,
+    vì reply thường đã được LLM chuẩn hóa sang ngôn ngữ domain tốt hơn.
+    """
+    if not reply:
+        return ""
+
+    text = reply.strip()
+    if not text:
+        return ""
+
+    # Bỏ phần gợi ý cuối câu nếu có, để tránh search theo metadata của prompt.
+    text = re.split(r"\n\s*\[(?:GỢI Ý|Gợi ý|Goi y|CÂU HỎI|Cau hoi)\].*$", text, flags=re.IGNORECASE)[0].strip()
+
+    candidates = []
+    for chunk in re.split(r"[\n\r]+|(?<=[.!?])\s+", text):
+        chunk = chunk.strip(" -•\t")
+        if chunk:
+            candidates.append(chunk)
+
+    focus_terms = (
+        "oresol", "bu nuoc", "dien giai", "mat nuoc", "thieu nuoc",
+        "vitamin", "paracetamol", "ibuprofen", "men tieu hoa", "thuoc", "san pham",
+        "dung dich", "siro", "vien", "goi", "keo", "gel", "kem", "xit",
+    )
+    for chunk in candidates:
+        normalized = _normalize_text(chunk)
+        if any(term in normalized for term in focus_terms):
+            return chunk[:180]
+
+    return candidates[0][:180] if candidates else text[:180]
+
 
 async def normalize_image_for_llm(image_url: str) -> str:
     """Download an image URL and return a data URL so the LLM receives bytes directly."""
@@ -922,6 +974,48 @@ class PharmacyAgent:
             "was_sanitized":       was_sanitized,
         }
 
+    async def _augment_suggested_products_from_reply(
+        self,
+        safe_reply: str,
+        intent: str,
+        products_suggested: list[dict],
+    ) -> list[dict]:
+        search_query = _extract_reply_search_query(safe_reply)
+        if not search_query:
+            return products_suggested
+
+        search_intent = "general" if intent == "drug_info_general" else intent
+        extra_products = await search_products_for_rag(
+            message=search_query,
+            intent=search_intent,
+            limit=RAG_MAX_PRODUCTS,
+        )
+        if not extra_products:
+            return products_suggested
+
+        extra_suggested = []
+        for product in extra_products:
+            if not product.get("mongoId") or not product.get("name"):
+                continue
+            extra_suggested.append({
+                "mongoId": product.get("mongoId"),
+                "name": product.get("name"),
+                "price": product.get("price", 0),
+                "slug": product.get("slug", ""),
+                "imageUrl": product.get("imageUrl", ""),
+                "unit": product.get("unit", "Sản phẩm"),
+                "requiresPrescription": bool(product.get("requiresPrescription")),
+            })
+
+        merged = _merge_unique_products(products_suggested, extra_suggested, RAG_MAX_PRODUCTS)
+        if len(merged) > len(products_suggested):
+            logger.info(
+                "[RAG] Reply search added %d product cards for query='%s'",
+                len(merged) - len(products_suggested),
+                search_query[:60],
+            )
+        return merged
+
     def _build_prefilter_response(
         self, classification: str, reply: str, is_escalated: bool
     ) -> dict:
@@ -1456,6 +1550,11 @@ class PharmacyAgent:
 
         # 5. Post-process
         result = self._process_final_reply(raw_reply, enriched_products)
+        result["products_suggested"] = await self._augment_suggested_products_from_reply(
+            result["safe_reply"],
+            classification,
+            result["products_suggested"],
+        )
 
         # [FIX-1] is_escalated dựa theo intent, KHÔNG phải was_sanitized
         # was_sanitized=True chỉ nghĩa là reply bị thay fallback — không nhất thiết cần DS
@@ -1610,6 +1709,11 @@ class PharmacyAgent:
 
         # 5. Post-process full reply
         result = self._process_final_reply(full_raw_reply, enriched_products)
+        result["products_suggested"] = await self._augment_suggested_products_from_reply(
+            result["safe_reply"],
+            classification,
+            result["products_suggested"],
+        )
         logger.info("[PharmacyAgent Stream] Sanitized: %s", result["was_sanitized"])
 
         # 6. Yield final metadata
