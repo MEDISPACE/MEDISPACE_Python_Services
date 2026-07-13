@@ -891,20 +891,29 @@ class PharmacyAgent:
             safe_reply = safe_reply[:match.start()].strip()
 
         # Lọc sản phẩm được nhắc đến trong phản hồi
+        def to_suggested_product(product: dict) -> dict:
+            suggested = {
+                "mongoId": product.get("mongoId"),
+                "name": product.get("name"),
+                "price": product.get("price", 0),
+                "slug": product.get("slug", ""),
+                "imageUrl": product.get("imageUrl", ""),
+                "unit": product.get("unit", "Sản phẩm"),
+            }
+            suggested["requiresPrescription"] = bool(product.get("requiresPrescription"))
+            return suggested
+
         products_suggested = []
         if context_products:
             for p in context_products:
                 name = p.get("name")
                 if name and is_product_mentioned(name, safe_reply):
-                    products_suggested.append({
-                        "mongoId":  p.get("mongoId"),
-                        "name":     name,
-                        "price":    p.get("price", 0),
-                        "slug":     p.get("slug", ""),
-                        "imageUrl": p.get("imageUrl", ""),
-                        "unit":     p.get("unit", "Sản phẩm"),
-                    })
-                    products_suggested[-1]["requiresPrescription"] = bool(p.get("requiresPrescription"))
+                    products_suggested.append(to_suggested_product(p))
+
+            if not products_suggested:
+                for p in context_products[:RAG_MAX_PRODUCTS]:
+                    if p.get("mongoId") and p.get("name"):
+                        products_suggested.append(to_suggested_product(p))
 
         return {
             "safe_reply":          safe_reply,
