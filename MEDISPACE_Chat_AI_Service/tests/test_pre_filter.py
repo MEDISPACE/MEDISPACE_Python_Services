@@ -124,6 +124,9 @@ class TestReturnRequest:
     def test_refund(self):
         assert classify_message("Tôi muốn hoàn tiền cho đơn hàng này") == "return_request"
 
+    def test_recent_returned_orders(self):
+        assert classify_message("Tôi muốn xem đơn hàng nào đã hoàn trả gần đây") == "return_request"
+
     def test_return_code(self):
         assert classify_message("Yêu cầu RET-123456 của tôi xử lý chưa?") == "return_request"
 

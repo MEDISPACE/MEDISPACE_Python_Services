@@ -377,6 +377,7 @@ LÝ DO ĐỔI TRẢ PHỔ BIẾN:
 - Đổi ý (OTC chưa mở seal) → Được đổi, khách chịu phí ship
 
 NHIỆM VỤ: Hướng dẫn quy trình đổi trả, giải thích chính sách, escalate khi cần.
+Nếu có THÔNG TIN YÊU CẦU ĐỔI TRẢ THỰC TẾ ở phần context, hãy trả lời trực tiếp dựa trên dữ liệu đó; không nói bạn không có quyền truy cập.
 
 ⚠️ QUAN TRỌNG: Nếu user đề cập phản ứng dị ứng nghiêm trọng (khó thở, sưng mặt, nổi mề đay nặng)
 → Ưu tiên hỏi về tình trạng sức khỏe trước, sau đó xử lý đổi trả.
@@ -694,6 +695,48 @@ class PharmacyAgent:
                         f"- Hạng tiếp theo: {loyalty.get('nextTierLabel')} "
                         f"| Cần thêm: {loyalty.get('amountToNextTier', 0):,}đ"
                     )
+
+        # ── Return requests (cho return_request intent) ───────────────────
+        elif intent == "return_request":
+            returns = context_data.get("returnRequests", [])
+            no_returns_found = context_data.get("noReturnRequestsFound")
+            if returns:
+                status_map = {
+                    "pending": "Chờ xử lý",
+                    "reviewing": "Đang xem xét",
+                    "approved": "Đã duyệt",
+                    "awaiting_return": "Chờ gửi hàng trả",
+                    "received": "Đã nhận hàng trả",
+                    "refund_processing": "Đang xử lý hoàn tiền",
+                    "completed": "Hoàn tất",
+                    "cancelled": "Đã hủy",
+                    "rejected": "Từ chối",
+                }
+                type_map = {"refund": "Hoàn tiền", "exchange": "Đổi hàng"}
+                lines.append("THÔNG TIN YÊU CẦU ĐỔI TRẢ THỰC TẾ CỦA KHÁCH HÀNG:")
+                for r in returns[:5]:
+                    items_str = ", ".join(
+                        f"{item.get('name') or item.get('productName', '')} x{item.get('quantity', 1)}"
+                        for item in r.get("items", [])[:3]
+                    ) or "Không có thông tin sản phẩm"
+                    status = r.get("status", "")
+                    line = (
+                        f"- Mã yêu cầu: {r.get('requestNumber', r.get('_id', 'N/A'))} "
+                        f"| Đơn: {r.get('orderNumber', 'N/A')} "
+                        f"| Trạng thái: {status_map.get(status, status or 'Không rõ')} "
+                        f"| Loại: {type_map.get(r.get('type', ''), r.get('type', 'N/A'))} "
+                        f"| Ngày tạo: {r.get('createdAt', 'N/A')} "
+                        f"| Sản phẩm: {items_str}"
+                    )
+                    if r.get("requestedAmount") is not None:
+                        line += f" | Yêu cầu hoàn: {r.get('requestedAmount', 0):,}đ"
+                    if r.get("refundedAmount") is not None:
+                        line += f" | Đã hoàn: {r.get('refundedAmount', 0):,}đ"
+                    if r.get("refundTransactionId"):
+                        line += f" | Mã GD hoàn tiền: {r.get('refundTransactionId')}"
+                    lines.append(line)
+            elif no_returns_found:
+                lines.append("THÔNG TIN YÊU CẦU ĐỔI TRẢ THỰC TẾ: Khách hàng chưa có yêu cầu đổi trả/hoàn tiền nào trong hệ thống.")
 
         # ── Purchase history (cho order_tracking khi hỏi lịch sử mua) ─────────
         purchase_history = context_data.get("purchaseHistory", [])

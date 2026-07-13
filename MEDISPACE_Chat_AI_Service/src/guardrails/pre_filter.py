@@ -71,7 +71,8 @@ COUPON_PATTERNS = [
 ]
 
 RETURN_PATTERNS = [
-    r'\btra hang\b', r'\bdoi hang\b', r'\bhoan tien\b',
+    r'\btra hang\b', r'\bdoi hang\b', r'\bhoan tien\b', r'\bhoan tra\b',
+    r'\bdon hang\b.{0,40}\b(da|duoc)?\s*(hoan tra|tra lai|hoan tien)\b',
     r'\bsan pham (bi loi|hu|vo|hong)\b', r'\bhang (bi loi|hu|vo|hong|sai)\b',
     r'\bsan pham\b.{0,40}\b(bi loi|hu|vo|hong|sai)\b.{0,40}\b(doi|tra|hoan)\b',
     r'\bRET[-\s]?\d+\b', r'\bye u cau\b.{0,20}\b(doi|tra|hoan)\b',
