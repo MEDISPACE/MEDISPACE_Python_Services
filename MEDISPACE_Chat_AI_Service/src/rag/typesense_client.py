@@ -39,7 +39,7 @@ EMBEDDING_FIELD = "embedding"
 SEMANTIC_QUERY_EXPANSIONS: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         ("sot", "ha sot", "nong sot", "on lanh", "lanh run", "cam cum", "cam lanh", "met moi trong nguoi", "nhuc moi"),
-        "paracetamol ha sot",
+        "paracetamol",
     ),
     (
         ("nong trong nguoi", "nong nguoi", "bi nong trong", "noi mun nong"),
@@ -267,7 +267,9 @@ async def search_products_for_rag(
         logger.warning("[RAG] TYPESENSE_API_KEY chưa được cấu hình — bỏ qua RAG")
         return []
 
-    query = _expand_semantic_query(_extract_search_query(message, intent))
+    raw_query = _extract_search_query(message, intent)
+    fever_query = _is_fever_query(raw_query)
+    query = _expand_semantic_query(raw_query)
     if not query:
         return []
 
@@ -292,7 +294,7 @@ async def search_products_for_rag(
             "categoryName,brandName,rating,inStock"
         ),
     }
-    if _is_fever_query(query):
+    if fever_query:
         params.pop("exhaustive_search", None)
 
     # ── Hybrid Search: thêm vector_query nếu được bật ─────────────────────────────
@@ -300,7 +302,7 @@ async def search_products_for_rag(
     # Ưu tiên BM25 vì tên thuốc cụ thể match keyword tốt hơn semantic
     # k=20: vector search trả 20 candidates rồi Typesense RRF fusion với BM25
     # distance_threshold=0.85: loại kết quả về ngữ nghĩa quá xa
-    if _VECTOR_SEARCH_ENABLED and not _is_fever_query(query):
+    if _VECTOR_SEARCH_ENABLED and not fever_query:
         _enable_auto_embedding_query(params, alpha=0.7, k=20, distance_threshold=0.85)
 
     async def _run_search(search_params: dict) -> list[dict]:
@@ -325,7 +327,7 @@ async def search_products_for_rag(
                     )
                     continue
                 doc = hit.get("document", {})
-                if _is_irrelevant_for_fever_query(query, doc):
+                if _is_irrelevant_for_fever_query(raw_query if fever_query else query, doc):
                     logger.debug(
                         "[RAG] Skip fever-irrelevant hit for query='%s': %s",
                         query[:50],

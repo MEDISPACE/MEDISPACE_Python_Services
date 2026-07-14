@@ -69,7 +69,6 @@ class TestExtractSearchQuery:
         result = _expand_semantic_query("Tôi cảm thấy sốt, mệt mỏi trong người")
         normalized = _normalize_ascii(result)
         assert "paracetamol" in normalized
-        assert "ha sot" in normalized
 
     def test_fever_query_filters_acne_products(self):
         acne_doc = {
