@@ -38,6 +38,10 @@ EMBEDDING_FIELD = "embedding"
 
 SEMANTIC_QUERY_EXPANSIONS: tuple[tuple[tuple[str, ...], str], ...] = (
     (
+        ("sot", "ha sot", "nong sot", "on lanh", "lanh run", "cam cum", "cam lanh", "met moi trong nguoi", "nhuc moi"),
+        "paracetamol ha sot",
+    ),
+    (
         ("nong trong nguoi", "nong nguoi", "bi nong trong", "noi mun nong"),
         "thanh nhiệt mát gan giải độc gan chức năng gan",
     ),
@@ -114,6 +118,31 @@ def _expand_semantic_query(query: str) -> str:
         if normalized_expansion not in normalized and expansion not in extra_phrases:
             extra_phrases.append(expansion)
     return " ".join(extra_phrases) if extra_phrases else query
+
+def _is_fever_query(query: str) -> bool:
+    normalized = _normalize_ascii(query)
+    return any(trigger in normalized for trigger in ("sot", "ha sot", "nong sot", "on lanh", "lanh run", "cam cum", "cam lanh", "met moi trong nguoi", "nhuc moi"))
+
+def _is_irrelevant_for_fever_query(query: str, doc: dict) -> bool:
+    if not _is_fever_query(query):
+        return False
+
+    haystack = _normalize_ascii(
+        " ".join(
+            str(doc.get(field, "") or "")
+            for field in (
+                "name",
+                "activeIngredients",
+                "indications",
+                "shortDescription",
+                "categoryName",
+                "brandName",
+            )
+        )
+    )
+    if any(term in haystack for term in ("ha sot", "sot", "paracetamol", "acetaminophen", "ibuprofen", "cam cum", "cam lanh", "giam dau", "dau nhuc", "nhuc dau", "phenylephrine")):
+        return False
+    return any(term in haystack for term in ("mun", "acne", "somaderm", "sua tam", "xa phong", "duong da", "lam sach da", "mo tham", "kem duong", "mat na", "toner"))
 
 def _append_csv_value(value: str, extra: str) -> str:
     return f"{value},{extra}" if value else extra
@@ -257,7 +286,7 @@ async def search_products_for_rag(
     # Ưu tiên BM25 vì tên thuốc cụ thể match keyword tốt hơn semantic
     # k=20: vector search trả 20 candidates rồi Typesense RRF fusion với BM25
     # distance_threshold=0.85: loại kết quả về ngữ nghĩa quá xa
-    if _VECTOR_SEARCH_ENABLED:
+    if _VECTOR_SEARCH_ENABLED and not _is_fever_query(query):
         _enable_auto_embedding_query(params, alpha=0.7, k=20, distance_threshold=0.85)
 
     async def _run_search(search_params: dict) -> list[dict]:
@@ -282,6 +311,13 @@ async def search_products_for_rag(
                     )
                     continue
                 doc = hit.get("document", {})
+                if _is_irrelevant_for_fever_query(query, doc):
+                    logger.debug(
+                        "[RAG] Skip fever-irrelevant hit for query='%s': %s",
+                        query[:50],
+                        doc.get("name", ""),
+                    )
+                    continue
                 products.append({
                     "mongoId":              doc.get("mongoId", ""),
                     "name":                 doc.get("name", ""),

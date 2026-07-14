@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from src.rag.typesense_client import (
     _extract_search_query,
     _expand_semantic_query,
+    _is_irrelevant_for_fever_query,
     _normalize_ascii,
     search_products_for_rag,
     INTENT_RAG_CONFIG,
@@ -63,6 +64,29 @@ class TestExtractSearchQuery:
         assert "oresol" in normalized
         assert "dien giai" in normalized
         assert "bu nuoc" in normalized
+
+    def test_expands_fever_to_antipyretic_terms(self):
+        result = _expand_semantic_query("Tôi cảm thấy sốt, mệt mỏi trong người")
+        normalized = _normalize_ascii(result)
+        assert "paracetamol" in normalized
+        assert "ha sot" in normalized
+
+    def test_fever_query_filters_acne_products(self):
+        acne_doc = {
+            "name": "Miếng dán mụn Somaderm Spot",
+            "categoryName": "Chăm sóc da mụn",
+            "indications": "Giúp che phủ và làm dịu vùng da mụn",
+        }
+        assert _is_irrelevant_for_fever_query("sốt mệt mỏi", acne_doc) is True
+
+    def test_fever_query_keeps_antipyretic_products(self):
+        fever_doc = {
+            "name": "Panadol",
+            "categoryName": "Thuốc giảm đau hạ sốt",
+            "activeIngredients": "Paracetamol",
+            "indications": "Giảm đau và hạ sốt",
+        }
+        assert _is_irrelevant_for_fever_query("sốt mệt mỏi", fever_doc) is False
 
 
 # ════════════════════════════════════════════════════════════════
@@ -176,7 +200,7 @@ class TestSearchProductsForRag:
                 mock_client.get = AsyncMock(return_value=mock_response)
                 mock_client_cls.return_value = mock_client
 
-                result = await search_products_for_rag("đau đầu hạ sốt", "general")
+                result = await search_products_for_rag("đau đầu", "general")
 
                 assert len(result) == 1
                 assert result[0]["mongoId"] == "abc123"
@@ -259,3 +283,22 @@ class TestSearchProductsForRag:
                     second_params = mock_client.get.await_args_list[1].kwargs["params"]
                     assert "vector_query" in first_params
                     assert "vector_query" not in second_params
+
+    async def test_fever_queries_skip_vector_search(self):
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(return_value={"hits": []})
+
+        with patch("src.rag.typesense_client.TYPESENSE_API_KEY", "test-key"):
+            with patch("src.rag.typesense_client._VECTOR_SEARCH_ENABLED", True):
+                with patch("httpx.AsyncClient") as mock_client_cls:
+                    mock_client = AsyncMock()
+                    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                    mock_client.__aexit__ = AsyncMock(return_value=None)
+                    mock_client.get = AsyncMock(return_value=mock_response)
+                    mock_client_cls.return_value = mock_client
+
+                    await search_products_for_rag("Tôi cảm thấy sốt, mệt mỏi trong người", "general")
+
+                    params = mock_client.get.await_args.kwargs["params"]
+                    assert "vector_query" not in params
