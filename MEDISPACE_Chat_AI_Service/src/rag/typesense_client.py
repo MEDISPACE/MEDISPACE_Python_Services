@@ -127,7 +127,13 @@ def _is_irrelevant_for_fever_query(query: str, doc: dict) -> bool:
     if not _is_fever_query(query):
         return False
 
-    haystack = _normalize_ascii(
+    primary_haystack = _normalize_ascii(
+        " ".join(
+            str(doc.get(field, "") or "")
+            for field in ("name", "activeIngredients", "categoryName", "brandName")
+        )
+    )
+    full_haystack = _normalize_ascii(
         " ".join(
             str(doc.get(field, "") or "")
             for field in (
@@ -140,11 +146,12 @@ def _is_irrelevant_for_fever_query(query: str, doc: dict) -> bool:
             )
         )
     )
-    has_relevant = any(
-        term in haystack
+    has_primary_relevant = any(
+        term in primary_haystack
         for term in ("ha sot", "sot", "paracetamol", "acetaminophen", "ibuprofen", "giam dau", "dau nhuc", "nhuc dau")
     )
-    if has_relevant:
+    has_symptom_relevant = any(term in full_haystack for term in ("ha sot", "giam dau", "dau nhuc", "nhuc dau"))
+    if has_primary_relevant or has_symptom_relevant:
         return False
 
     return True

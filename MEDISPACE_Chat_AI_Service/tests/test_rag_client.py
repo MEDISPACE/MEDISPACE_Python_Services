@@ -88,6 +88,15 @@ class TestExtractSearchQuery:
         }
         assert _is_irrelevant_for_fever_query("sốt mệt mỏi", fever_doc) is False
 
+    def test_fever_query_filters_detox_related_paracetamol_docs(self):
+        detox_doc = {
+            "name": "Dung dịch uống Acetuss",
+            "categoryName": "Thuốc trị ho cảm",
+            "activeIngredients": "N-acetylcysteine",
+            "indications": "Được làm thuốc giải độc trong quá liều paracetamol",
+        }
+        assert _is_irrelevant_for_fever_query("sốt mệt mỏi", detox_doc) is True
+
 
 # ════════════════════════════════════════════════════════════════
 # INTENT_RAG_CONFIG — Configuration mapping
