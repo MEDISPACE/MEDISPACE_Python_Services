@@ -140,9 +140,14 @@ def _is_irrelevant_for_fever_query(query: str, doc: dict) -> bool:
             )
         )
     )
-    if any(term in haystack for term in ("ha sot", "sot", "paracetamol", "acetaminophen", "ibuprofen", "cam cum", "cam lanh", "giam dau", "dau nhuc", "nhuc dau", "phenylephrine")):
+    has_relevant = any(
+        term in haystack
+        for term in ("ha sot", "sot", "paracetamol", "acetaminophen", "ibuprofen", "giam dau", "dau nhuc", "nhuc dau")
+    )
+    if has_relevant:
         return False
-    return any(term in haystack for term in ("mun", "acne", "somaderm", "sua tam", "xa phong", "duong da", "lam sach da", "mo tham", "kem duong", "mat na", "toner"))
+
+    return True
 
 def _append_csv_value(value: str, extra: str) -> str:
     return f"{value},{extra}" if value else extra
