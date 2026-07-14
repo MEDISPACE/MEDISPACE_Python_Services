@@ -90,3 +90,40 @@ async def test_reply_search_augments_suggested_product_cards():
         }
     ]
     assert mock_search.await_args.kwargs["intent"] == "general"
+
+@pytest.mark.asyncio
+async def test_reply_search_drops_unmentioned_fallback_cards():
+    agent = PharmacyAgent()
+    fallback_products = [
+        {
+            "mongoId": "urgo-1",
+            "name": "Xịt phủ vết thương Urgo Sanyrene",
+            "price": 200000,
+            "slug": "xit-phu-vet-thuong-urgo",
+            "imageUrl": "https://example.com/urgo.jpg",
+            "unit": "Sản phẩm",
+            "requiresPrescription": False,
+        }
+    ]
+
+    with patch(
+        "src.agents.pharmacy_agent.search_products_for_rag",
+        new=AsyncMock(return_value=[
+            {
+                "mongoId": "oresol-1",
+                "name": "Oresol bù nước điện giải",
+                "price": 15000,
+                "slug": "oresol-bu-nuoc-dien-giai",
+                "imageUrl": "https://example.com/oresol.jpg",
+                "unit": "Gói",
+                "requiresPrescription": False,
+            }
+        ]),
+    ):
+        result = await agent._augment_suggested_products_from_reply(
+            "Bạn có thể cân nhắc Oresol để bù nước và điện giải.",
+            "general",
+            fallback_products,
+        )
+
+    assert [product["name"] for product in result] == ["Oresol bù nước điện giải"]

@@ -1007,7 +1007,11 @@ class PharmacyAgent:
                 "requiresPrescription": bool(product.get("requiresPrescription")),
             })
 
-        merged = _merge_unique_products(products_suggested, extra_suggested, RAG_MAX_PRODUCTS)
+        mentioned_existing = [
+            product for product in products_suggested
+            if product.get("name") and is_product_mentioned(product["name"], safe_reply)
+        ]
+        merged = _merge_unique_products(extra_suggested, mentioned_existing, RAG_MAX_PRODUCTS)
         if len(merged) > len(products_suggested):
             logger.info(
                 "[RAG] Reply search added %d product cards for query='%s'",
