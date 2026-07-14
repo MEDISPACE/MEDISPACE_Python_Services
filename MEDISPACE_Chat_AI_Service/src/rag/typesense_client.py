@@ -32,7 +32,7 @@ TYPESENSE_ARTICLES   = os.getenv("TYPESENSE_ARTICLES_COLLECTION", "articles")
 _VECTOR_SEARCH_ENABLED = os.getenv("TYPESENSE_VECTOR_SEARCH", "true").lower() == "true"
 
 # Timeout ngắn — RAG nên fail fast để không block LLM call
-_TIMEOUT = httpx.Timeout(3.0, connect=2.0)
+_TIMEOUT = httpx.Timeout(6.0, connect=2.5)
 
 EMBEDDING_FIELD = "embedding"
 
@@ -292,6 +292,8 @@ async def search_products_for_rag(
             "categoryName,brandName,rating,inStock"
         ),
     }
+    if _is_fever_query(query):
+        params.pop("exhaustive_search", None)
 
     # ── Hybrid Search: thêm vector_query nếu được bật ─────────────────────────────
     # alpha=0.7: 70% BM25 score + 30% vector score
